@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flight-recorder"
+version = "0.1.0"
+description = "A tamper-evident record of what an AI agent actually did: an MCP proxy and session importers writing a hash-chained log."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+# The proxy, the chain and the verifier use the standard library only. httpx is
+# for the Devin importer, the one part that talks to a network.
+dependencies = ["httpx>=0.27"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "pip-audit>=2.7"]
+
+[project.scripts]
+flight-recorder = "flight_recorder.cli:main"
+
+[project.urls]
+Documentation = "https://arboriafoundation.org/docs/flight-recorder/"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "BLE", "SIM", "RUF", "N"]
+ignore = ["S603"]  # subprocess without shell: the proxy's whole job is running a child
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S105", "S106", "S108", "S607"]
+
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error"]

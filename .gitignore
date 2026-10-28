@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+# Recorded logs and importer state: real tool calls, possibly sensitive.
+recordings/
+*.ndjson
+state.db
