@@ -3,9 +3,11 @@
 Devin runs its own shell and editor, outside any MCP proxy, so what it did
 reaches Flight Recorder through the API instead: each session's messages, its
 status changes, and a snapshot of its metadata whenever that changes. One log
-per Devin session, `devin-<session id>.ndjson`, extended on every poll.
+per Devin session, `devin-<session id>.ndjson` (Devin's own ids already start
+`devin-`), extended on every poll.
 
-Polling is idempotent. `state.db` (SQLite) remembers which messages and which
+Polling is idempotent. A SQLite state database, kept apart from the logs,
+remembers which messages and which
 status each session has been recorded with, so a restart, or two imports in a
 row, never records anything twice.
 
@@ -194,7 +196,9 @@ class Importer:
                 summary.planned.append(f"{session_id}  message  {m.get('type', '?')}")
             return
 
-        path = self.log_dir / f"devin-{safe_name(session_id)}.ndjson"
+        # Devin's ids already read "devin-…"; don't double the prefix.
+        name = safe_name(session_id)
+        path = self.log_dir / f"{name if name.startswith('devin-') else 'devin-' + name}.ndjson"
         with Recorder(path, session_id=session_id, agent="devin") as rec:
             if changed_meta:
                 rec.append(

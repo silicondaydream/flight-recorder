@@ -14,6 +14,13 @@ from typing import Any
 from flight_recorder import __version__
 
 
+def default_state_dir() -> Path:
+    """Importer state lives apart from the logs, so ingesting the log directory
+    (into Lincoln, say) never reads a database as if it were a log."""
+    base = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state"
+    return Path(base) / "flight-recorder"
+
+
 def default_log_dir() -> Path:
     base = os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share"
     return Path(os.environ.get("FLIGHT_RECORDER_DIR") or Path(base) / "flight-recorder")
@@ -104,7 +111,7 @@ def _import_devin(args: argparse.Namespace) -> int:
         return 2
     log_dir = Path(args.log_dir)
     client = DevinClient(api_key, base_url=args.base_url)
-    state = State(Path(args.state) if args.state else log_dir / "devin-state.db")
+    state = State(Path(args.state) if args.state else default_state_dir() / "devin-state.db")
     importer = Importer(
         client,
         log_dir,
@@ -210,7 +217,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     devin.add_argument("--log-dir", default=str(default_log_dir()), help="where logs go")
     devin.add_argument(
-        "--state", help="importer state database (default: <log-dir>/devin-state.db)"
+        "--state",
+        help="importer state database (default: ~/.local/state/flight-recorder/devin-state.db)",
     )
     devin.add_argument("--base-url", default="https://api.devin.ai/v1", help="Devin API base URL")
     devin.add_argument(

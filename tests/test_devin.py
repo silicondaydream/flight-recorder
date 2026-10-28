@@ -173,6 +173,12 @@ def test_a_hostile_session_id_cannot_escape_the_log_directory(
     assert detail and b"..%2F..%2Fescape" in detail[0].url.raw_path
     logs = list((tmp_path / "logs").glob("*.ndjson"))
     assert [p.name for p in logs] == ["devin-escape.ndjson"]
+
+
+def test_devins_own_id_prefix_is_not_doubled(devin: FakeDevin, tmp_path: Path, make: Make) -> None:
+    devin.add("devin-0a1b2c", messages=1)
+    make().run()
+    assert [p.name for p in (tmp_path / "logs").glob("*.ndjson")] == ["devin-0a1b2c.ndjson"]
     assert not (tmp_path.parent / "escape.ndjson").exists()
 
 
