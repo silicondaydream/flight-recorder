@@ -90,6 +90,52 @@ def _tail(args: argparse.Namespace) -> int:
     return 0
 
 
+def _import_devin(args: argparse.Namespace) -> int:
+    import time
+
+    from flight_recorder.importers.devin import DevinClient, DevinError, Importer, State, describe
+    from flight_recorder.redact import Redactor
+
+    # The key comes from the environment only: a flag would leave it in shell
+    # history and in the process list.
+    api_key = os.environ.get("DEVIN_API_KEY")
+    if not api_key:
+        print("flight-recorder: set DEVIN_API_KEY", file=sys.stderr)
+        return 2
+    log_dir = Path(args.log_dir)
+    client = DevinClient(api_key, base_url=args.base_url)
+    state = State(Path(args.state) if args.state else log_dir / "devin-state.db")
+    importer = Importer(
+        client,
+        log_dir,
+        state,
+        redactor=Redactor(args.redact),
+        max_payload=args.max_payload,
+        dry_run=args.dry_run,
+    )
+    try:
+        while True:
+            try:
+                summary = importer.run(tags=args.tag or None)
+            except DevinError as exc:
+                print(f"flight-recorder: {exc}", file=sys.stderr)
+                if not args.watch or "DEVIN_API_KEY" in str(exc):
+                    return 2
+            else:
+                for line in summary.planned:
+                    print(line)
+                if not args.dry_run:
+                    print(describe(summary), flush=True)
+            if not args.watch:
+                return 0
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        client.close()
+        state.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="flight-recorder",
@@ -153,6 +199,33 @@ def main(argv: list[str] | None = None) -> int:
     tail.add_argument("--json", action="store_true", help="print entries as JSON lines")
     tail.add_argument("--poll", type=float, default=0.5, help="seconds between reads (--follow)")
     tail.set_defaults(func=_tail)
+
+    imp = sub.add_parser("import", help="import sessions from an agent platform's API")
+    sources = imp.add_subparsers(dest="source", required=True)
+    devin = sources.add_parser(
+        "devin",
+        help="import Devin sessions (messages, status changes, metadata)",
+        description="Reads DEVIN_API_KEY from the environment. One log per session, "
+        "extended on every run; already-recorded messages are skipped.",
+    )
+    devin.add_argument("--log-dir", default=str(default_log_dir()), help="where logs go")
+    devin.add_argument(
+        "--state", help="importer state database (default: <log-dir>/devin-state.db)"
+    )
+    devin.add_argument("--base-url", default="https://api.devin.ai/v1", help="Devin API base URL")
+    devin.add_argument(
+        "--tag", action="append", default=[], help="only sessions with this tag (repeatable)"
+    )
+    devin.add_argument("--watch", action="store_true", help="keep polling")
+    devin.add_argument(
+        "--interval", type=float, default=60.0, help="seconds between polls (default: 60)"
+    )
+    devin.add_argument(
+        "--dry-run", action="store_true", help="print what would be recorded; write nothing"
+    )
+    devin.add_argument("--max-payload", type=int, default=65_536, metavar="BYTES")
+    devin.add_argument("--redact", action="append", default=[], metavar="REGEX")
+    devin.set_defaults(func=_import_devin)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

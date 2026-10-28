@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
 
-from flight_recorder.chain import Recorder
+from flight_recorder.chain import Recorder, safe_name
 from flight_recorder.redact import Redactor, keep
 
 EXIT_RECORDER_FAILED = 70  # EX_SOFTWARE: --strict and a write failed
@@ -192,7 +192,10 @@ def _relay(
 def run(options: Options) -> int:
     """Run the server under the proxy. Returns the server's exit code."""
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    path = options.log_dir / f"{stamp}-{_safe(options.name)}-{options.session_id[:8]}.ndjson"
+    path = (
+        options.log_dir
+        / f"{stamp}-{safe_name(options.name)}-{safe_name(options.session_id)[:8]}.ndjson"
+    )
     recorder = Recorder(path, session_id=options.session_id, agent="mcp-proxy")
     proxy = Proxy(options, recorder)
     command, _ = proxy.redactor.value(options.command)
@@ -268,8 +271,3 @@ def run(options: Options) -> int:
         )
     recorder.close()
     return code
-
-
-def _safe(name: str) -> str:
-    cleaned = "".join(c if c.isalnum() or c in "-_." else "-" for c in name)
-    return cleaned.strip("-.") or "server"
