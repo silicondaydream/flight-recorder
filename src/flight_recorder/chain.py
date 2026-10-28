@@ -50,6 +50,12 @@ def now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def safe_name(name: str) -> str:
+    """A file-name fragment from untrusted text: no separators, no dot-dot."""
+    cleaned = "".join(c if c.isalnum() or c in "-_." else "-" for c in name)
+    return cleaned.strip("-.") or "unnamed"
+
+
 class Recorder:
     """Appends entries to one session's log.
 
@@ -80,15 +86,32 @@ class Recorder:
     def sequence(self) -> int:
         return self._sequence
 
-    def append(self, action: str, *, outcome: str | None = None, **sections: Any) -> Entry:
-        """Write one entry. `sections` are merged in as top-level objects."""
+    def append(
+        self,
+        action: str,
+        *,
+        outcome: str | None = None,
+        timestamp: str | None = None,
+        **sections: Any,
+    ) -> Entry:
+        """Write one entry. `sections` are merged in as top-level objects.
+
+        `timestamp` is when the event happened, for entries imported after the
+        fact; it defaults to now. Either way `event.ingested` is when it was
+        written, so a reader can tell a live record from an import.
+        """
         with self._lock:
-            event: dict[str, Any] = {"sequence": self._sequence + 1, "action": action}
+            written = now()
+            event: dict[str, Any] = {
+                "sequence": self._sequence + 1,
+                "action": action,
+                "ingested": written,
+            }
             if outcome is not None:
                 event["outcome"] = outcome
             event.update(sections.pop("event", {}))
             entry: Entry = {
-                "@timestamp": now(),
+                "@timestamp": timestamp or written,
                 "event": event,
                 "session": {"id": self.session_id},
                 "agent": {"name": self.agent},

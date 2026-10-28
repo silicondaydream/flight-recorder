@@ -125,3 +125,14 @@ def test_entries_are_ecs_shaped_for_lincoln(tmp_path: Path) -> None:
     assert entry["@timestamp"].endswith("Z")
     assert entry["event"]["action"] == "tool.call"
     assert entry["session"]["id"] == "s1" and entry["agent"]["name"] == "test"
+
+
+def test_an_imported_entry_keeps_when_it_happened_and_when_it_was_written(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "s.ndjson"
+    with Recorder(path, session_id="s1", agent="test") as rec:
+        entry = rec.append("message", timestamp="2026-10-01T12:00:00.000Z")
+    assert entry["@timestamp"] == "2026-10-01T12:00:00.000Z"
+    assert entry["event"]["ingested"] > entry["@timestamp"]
+    assert verify_file(path).valid
