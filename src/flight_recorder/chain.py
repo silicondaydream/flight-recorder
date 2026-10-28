@@ -131,28 +131,41 @@ def read_lines(path: Path) -> Iterator[tuple[int, str]]:
                 yield number, line
 
 
+class BrokenLinkError(ValueError):
+    """An entry that does not fit the chain at this point."""
+
+
+def check(raw: str | bytes, *, sequence: int, previous: str) -> Entry:
+    """Parse one line and check it is the next link: entry `sequence` after `previous`.
+
+    The one definition of a valid link, shared by `verify` and the live reader.
+    """
+    try:
+        entry: Entry = json.loads(raw)
+        found = entry["event"]["sequence"]
+        chain = entry["chain"]
+    except (ValueError, KeyError, TypeError):
+        raise BrokenLinkError("not a recorder entry") from None
+    if found != sequence:
+        raise BrokenLinkError(
+            f"sequence {found}, expected {sequence}: an entry is missing or reordered"
+        )
+    if chain.get("previous") != previous:
+        raise BrokenLinkError("does not link to the entry before it")
+    if chain.get("hash") != entry_hash(entry):
+        raise BrokenLinkError("contents changed after it was written")
+    return entry
+
+
 def verify_lines(lines: Iterator[tuple[int, str]]) -> Verification:
     """Check every link and every hash, stopping at the first failure."""
     previous, count = GENESIS, 0
     for number, line in lines:
         try:
-            entry = json.loads(line)
-            sequence = entry["event"]["sequence"]
-            chain = entry["chain"]
-        except (ValueError, KeyError, TypeError):
-            return Verification(False, count, previous, number, "not a recorder entry")
-        if sequence != count + 1:
-            reason = f"sequence {sequence}, expected {count + 1}: an entry is missing or reordered"
-            return Verification(False, count, previous, number, reason)
-        if chain.get("previous") != previous:
-            return Verification(
-                False, count, previous, number, "does not link to the entry before it"
-            )
-        if chain.get("hash") != entry_hash(entry):
-            return Verification(
-                False, count, previous, number, "contents changed after it was written"
-            )
-        previous, count = chain["hash"], count + 1
+            entry = check(line, sequence=count + 1, previous=previous)
+        except BrokenLinkError as exc:
+            return Verification(False, count, previous, number, str(exc))
+        previous, count = entry["chain"]["hash"], count + 1
     return Verification(True, count, previous)
 
 
