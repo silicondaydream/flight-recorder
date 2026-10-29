@@ -9,9 +9,9 @@ description = "A tamper-evident record of what an AI agent actually did: an MCP 
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-# The standard library only: the proxy, the chain and the verifier have nothing
-# to download, so nothing in the supply chain can change what gets recorded.
-dependencies = []
+# The core (proxy, chain, verifier) uses the standard library only. httpx is for
+# the Devin importer on this branch, the one part that talks to a network.
+dependencies = ["httpx>=0.27"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "pip-audit>=2.7"]
