@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from flight_recorder.chain import GENESIS, Recorder, canonical, entry_hash, verify_file
+from flight_recorder.chain import GENESIS, Recorder, canonical, entry_hash, safe_name, verify_file
 
 
 def _log(tmp_path: Path, n: int = 4) -> Path:
@@ -136,3 +136,16 @@ def test_an_imported_entry_keeps_when_it_happened_and_when_it_was_written(
     assert entry["@timestamp"] == "2026-10-01T12:00:00.000Z"
     assert entry["event"]["ingested"] > entry["@timestamp"]
     assert verify_file(path).valid
+
+
+@pytest.mark.parametrize(
+    ("raw", "safe"),
+    [
+        ("github", "github"),
+        ("../../etc/passwd", "etc-passwd"),
+        ("a/b\\c", "a-b-c"),
+        ("..", "unnamed"),
+    ],
+)
+def test_untrusted_names_cannot_leave_the_log_directory(raw: str, safe: str) -> None:
+    assert safe_name(raw) == safe
