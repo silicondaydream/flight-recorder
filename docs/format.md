@@ -55,8 +55,10 @@ mapping.
 | `recorder.error` | proxy | `side`, `error`, `line`: something relayed that could not be read |
 | `session.end` | proxy | `exit_code`, `messages` (counts by method), `unanswered` (tools) |
 | `session.snapshot` | Devin import | `session`: every metadata field the API returned |
-| `session.status` | Devin import | `status`, `previous_status` |
-| `message` | Devin import | `type`, `origin`, `username`, `event_id`, `text` |
+| `session.status` | Devin import | `status`, `status_detail`, `previous_status`, `previous_status_detail` |
+| `message` | Devin import | `from` (`devin`/`user`), `origin`, `username`, `event_id`, `text` |
+| `watchdog.log` / `.alert` / `.nudge` / `.sleep` / `.terminate` | Watchdog | `rung`, `dry_run`, `detail`, `findings`, `verdict`, `acus_consumed` |
+| `watchdog.held` / `.judged` / `.approval_requested` / `.approved` / `.recovered` | Watchdog | why it held back, the judge's verdict, who approved |
 
 ## Kept payloads
 

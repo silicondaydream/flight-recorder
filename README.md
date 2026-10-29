@@ -1,5 +1,13 @@
 # Flight Recorder
 
+> **This is the `devin` branch.** It adds the Devin v3 API importer and
+> **Watchdog**, a supervisor that notices stuck or drifting Devin sessions and
+> escalates: log → Teams alert → nudge → sleep → terminate (with approval).
+> Try it with no keys: `make setup && .venv/bin/watchdog demo`, then open
+> http://127.0.0.1:8765. See [docs/watchdog.md](docs/watchdog.md).
+>
+> ![Watchdog dashboard](docs/img/watchdog-dashboard.png)
+
 A tamper-evident record of what an AI agent actually did. Put it between an
 agent and its MCP servers, and every tool call and result goes into a
 hash-chained log that shows if anyone edits it afterwards.
@@ -51,7 +59,7 @@ make check            # ruff, mypy --strict, tests
 ```
 
 The core uses only the Python standard library. This branch adds `httpx`, for the
-Devin importer.
+Devin importer and Watchdog.
 
 ## Record an MCP server
 

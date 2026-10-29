@@ -1,0 +1,27 @@
+# docker compose up          → watches your org, DRY RUN, dashboard on localhost:8765
+# docker compose run --rm --service-ports demo   → the scripted demo, no keys needed
+services:
+  watchdog:
+    build: .
+    restart: unless-stopped
+    ports: ["127.0.0.1:8765:8765"]
+    volumes: ["watchdog-data:/data"]
+    environment:
+      DEVIN_API_KEY: ${DEVIN_API_KEY:?set a Devin service-user key (cog_...)}
+      DEVIN_ORG_ID: ${DEVIN_ORG_ID:-}
+      TEAMS_WEBHOOK_URL: ${TEAMS_WEBHOOK_URL:-}
+      WATCHDOG_DRY_RUN: ${WATCHDOG_DRY_RUN:-1}
+      WATCHDOG_JUDGE_MODEL: ${WATCHDOG_JUDGE_MODEL:-}
+      WATCHDOG_APPROVAL_TOKEN: ${WATCHDOG_APPROVAL_TOKEN:?set a token for approving terminates}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+
+  demo:
+    build: .
+    profiles: [demo]
+    ports: ["127.0.0.1:8765:8765"]
+    command: ["demo", "--host", "0.0.0.0", "--dir", "/data/demo"]
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+
+volumes:
+  watchdog-data:
