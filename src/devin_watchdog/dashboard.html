@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Watchdog</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --surface-2: #f0efec;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --ring: rgba(11,11,11,0.10);
+  --accent: #2a78d6;
+  --accent-wash: #cde2fb;
+  --good: #0ca30c;
+  --good-text: #006300;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+  --sleep: #6250d6;
+  --on-fill: #ffffff;
+  --on-warning: #0b0b0b;
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --surface-2: #262624; --ink: #f0efec; --ink-2: #c3c2b7;
+    --muted: #898781; --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+    --accent: #3987e5; --accent-wash: #184f95; --good-text: #0ca30c; --sleep: #9085e9;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --surface-2: #262624; --ink: #f0efec; --ink-2: #c3c2b7;
+  --muted: #898781; --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+  --accent: #3987e5; --accent-wash: #184f95; --good-text: #0ca30c; --sleep: #9085e9;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 var(--font); }
+header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+  padding: 16px 24px; border-bottom: 1px solid var(--grid); background: var(--surface); }
+h1 { margin: 0; font-size: 20px; letter-spacing: -0.01em; display: flex; align-items: center; gap: 10px; }
+.mode { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; letter-spacing: .04em; }
+.mode.dry { background: var(--warning); color: var(--on-warning); }
+.mode.live { background: var(--critical); color: var(--on-fill); }
+.meta { color: var(--ink-2); font-size: 13px; display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+button { font: inherit; border-radius: 8px; border: 1px solid var(--axis); background: var(--surface);
+  color: var(--ink); padding: 5px 11px; cursor: pointer; }
+button:hover { background: var(--surface-2); }
+button.danger { background: var(--critical); color: var(--on-fill); border-color: var(--critical); font-weight: 600; }
+main { padding: 20px 24px 40px; max-width: 1500px; margin: 0 auto; }
+.banner { background: var(--critical); color: var(--on-fill); padding: 10px 14px; border-radius: 10px; margin-bottom: 16px; font-weight: 600; }
+.kpis { display: grid; grid-template-columns: minmax(240px, 1.4fr) repeat(4, minmax(120px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.tile { background: var(--surface); border: 1px solid var(--ring); border-radius: 12px; padding: 14px 16px; }
+.tile .label { color: var(--ink-2); font-size: 12px; }
+.tile .value { font-size: 28px; font-weight: 650; margin-top: 2px; }
+.tile.hero .value { font-size: 48px; line-height: 1.05; }
+.tile .sub { color: var(--muted); font-size: 12px; }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 20px; align-items: start; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 14px; }
+.card { background: var(--surface); border: 1px solid var(--ring); border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.card.flagged { box-shadow: inset 4px 0 0 var(--serious); }
+.card.asleep { box-shadow: inset 4px 0 0 var(--sleep); }
+.card.ended { opacity: .62; }
+.top { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+.title { font-weight: 650; font-size: 15px; }
+.title a { color: inherit; text-decoration: none; }
+.title a:hover { text-decoration: underline; }
+.sid { color: var(--muted); font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.task { color: var(--ink-2); font-size: 13px; }
+.pill { display: inline-flex; gap: 5px; align-items: center; font-size: 12px; padding: 2px 8px; border-radius: 999px;
+  background: var(--surface-2); color: var(--ink-2); white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.dot.running { background: var(--good); } .dot.waiting { background: var(--warning); }
+.dot.suspended { background: var(--sleep); } .dot.exit, .dot.error { background: var(--axis); }
+.ladder { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; }
+.rung { text-align: center; font-size: 11px; font-weight: 600; padding: 6px 2px; background: var(--surface-2); color: var(--muted); }
+.rung:first-child { border-radius: 6px 0 0 6px; } .rung:last-child { border-radius: 0 6px 6px 0; }
+.rung.done { color: var(--ink); }
+.rung.done.r0 { background: var(--axis); } .rung.done.r1 { background: var(--warning); color: var(--on-warning); }
+.rung.done.r2 { background: var(--serious); color: var(--on-fill); } .rung.done.r3 { background: var(--sleep); color: var(--on-fill); }
+.rung.done.r4 { background: var(--critical); color: var(--on-fill); }
+.rung.current { outline: 2px solid var(--ink); outline-offset: -2px; }
+.findings { display: flex; flex-direction: column; gap: 6px; }
+.finding { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: baseline; font-size: 13px; }
+.rule { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 6px; background: var(--surface-2); color: var(--ink); white-space: nowrap; }
+.rule::before { content: "▲ "; color: var(--serious); }
+.rule.high::before { color: var(--critical); }
+.rule.low::before { color: var(--warning); }
+.guess { color: var(--muted); font-size: 11px; }
+.held { font-size: 12px; color: var(--ink-2); background: var(--surface-2); border-radius: 8px; padding: 6px 9px; }
+.held::before { content: "⏸ "; }
+.spark { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; }
+.spark svg { width: 100%; height: 44px; display: block; overflow: visible; }
+.spark .num { text-align: right; }
+.spark .num b { font-size: 18px; } .spark .num div { color: var(--muted); font-size: 11px; }
+.recent { font-size: 12px; color: var(--ink-2); border-top: 1px solid var(--grid); padding-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.recent .who { color: var(--muted); font-weight: 600; margin-right: 6px; }
+.recent .msg { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.feed { background: var(--surface); border: 1px solid var(--ring); border-radius: 14px; padding: 14px 16px; position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow: auto; }
+.feed h2 { font-size: 14px; margin: 0 0 10px; }
+.ev { display: grid; grid-template-columns: 14px 1fr; gap: 8px; padding: 8px 0; border-top: 1px solid var(--grid); font-size: 12.5px; }
+.ev:first-of-type { border-top: 0; }
+.ev .mark { width: 10px; height: 10px; border-radius: 3px; margin-top: 4px; background: var(--axis); }
+.ev .mark.r1 { background: var(--warning); } .ev .mark.r2 { background: var(--serious); }
+.ev .mark.r3 { background: var(--sleep); } .ev .mark.r4 { background: var(--critical); }
+.ev .mark.held { background: transparent; box-shadow: inset 0 0 0 2px var(--axis); }
+.ev .mark.recovered, .ev .mark.judged { background: var(--good); }
+.ev .head { font-weight: 600; } .ev .when { color: var(--muted); font-weight: 400; margin-left: 6px; }
+.ev .detail { color: var(--ink-2); overflow-wrap: anywhere; }
+.ev.failed .head { color: var(--critical); }
+.tip { position: fixed; pointer-events: none; background: var(--ink); color: var(--surface); font-size: 12px; padding: 4px 8px; border-radius: 6px; display: none; z-index: 10; }
+.empty { color: var(--muted); padding: 30px; text-align: center; background: var(--surface); border-radius: 14px; border: 1px dashed var(--axis); }
+@media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } .feed { position: static; max-height: none; } .kpis { grid-template-columns: repeat(2, 1fr); } .tile.hero { grid-column: 1 / -1; } }
+@media (max-width: 520px) { header, main { padding-left: 16px; padding-right: 16px; } .cards { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Watchdog <span id="mode" class="mode dry">DRY RUN</span></h1>
+  <div class="meta">
+    <span id="cfg"></span>
+    <span id="updated">connecting…</span>
+    <button id="theme" type="button" aria-label="Toggle colour theme">Theme</button>
+  </div>
+</header>
+<main>
+  <div id="banner"></div>
+  <section class="kpis" aria-label="Summary">
+    <div class="tile hero"><div class="label">ACUs burning without progress (flagged, still running)</div><div class="value" id="k-risk">–</div><div class="sub" id="k-risk-sub"></div></div>
+    <div class="tile"><div class="label">Sessions watched</div><div class="value" id="k-watch">–</div></div>
+    <div class="tile"><div class="label">Flagged now</div><div class="value" id="k-flag">–</div></div>
+    <div class="tile"><div class="label">Nudged</div><div class="value" id="k-nudge">–</div></div>
+    <div class="tile"><div class="label">Asleep / awaiting approval</div><div class="value" id="k-sleep">–</div></div>
+  </section>
+  <div class="layout">
+    <section class="cards" id="cards" aria-label="Sessions"></section>
+    <aside class="feed" aria-label="Watchdog decisions"><h2>Decisions</h2><div id="feed"></div></aside>
+  </div>
+</main>
+<div class="tip" id="tip"></div>
+<script>
+"use strict";
+const RUNG_LABEL = { log: "Log", alert: "Alert", nudge: "Nudge", sleep: "Sleep", terminate: "Terminate" };
+const RULE_LABEL = {
+  repeated_failing_commands: "Failing command", repeated_errors: "Repeated error", edit_thrash: "Edit thrash",
+  test_build_loop: "Test/build loop", acus_without_progress: "ACUs, no progress",
+  environment_blocker: "Env blocker", scope_drift: "Scope drift",
+};
+const tip = document.getElementById("tip");
+
+// Every string from a session is set as text, never as HTML.
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === false || v == null) continue;
+    if (k === "class") el.className = v; else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid instanceof Node ? kid : String(kid));
+  return el;
+}
+function ago(s) {
+  if (s == null) return "";
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  return `${(s / 3600).toFixed(1)}h ago`;
+}
+function statusPill(s) {
+  const waiting = s.waiting_on_human;
+  const cls = waiting ? "waiting" : s.status;
+  const text = waiting ? `waiting on human` : (s.status_detail ? `${s.status} · ${s.status_detail}` : s.status);
+  return h("span", { class: "pill" }, h("span", { class: `dot ${cls}` }), text);
+}
+function ladder(s, rungs) {
+  return h("div", { class: "ladder", role: "img", "aria-label": `Escalation: ${s.rung_name}` },
+    rungs.map((r, i) => h("div", {
+      class: `rung r${i}${i <= s.rung ? " done" : ""}${i === s.rung ? " current" : ""}`,
+      title: i === 4 ? "needs a person's approval" : RUNG_LABEL[r],
+    }, i === 4 && s.pending_approval ? "Approve?" : RUNG_LABEL[r])));
+}
+function sparkline(s) {
+  const pts = s.acus_series;
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 300 44");
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `ACUs consumed: ${s.acus}`);
+  if (pts.length > 1) {
+    const t0 = pts[0][0], t1 = pts[pts.length - 1][0] || 1;
+    const vmax = Math.max(...pts.map(p => p[1]), 0.1);
+    const x = t => ((t - t0) / ((t1 - t0) || 1)) * 296 + 2;
+    const y = v => 40 - (v / vmax) * 36;
+    const d = pts.map((p, i) => `${i ? "L" : "M"}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join(" ");
+    const base = document.createElementNS(ns, "line");
+    Object.entries({ x1: 0, x2: 300, y1: 40.5, y2: 40.5, stroke: "var(--axis)", "stroke-width": 1, "vector-effect": "non-scaling-stroke" }).forEach(([k, v]) => base.setAttribute(k, v));
+    const area = document.createElementNS(ns, "path");
+    area.setAttribute("d", `${d} L${x(pts[pts.length - 1][0]).toFixed(1)},40 L${x(t0).toFixed(1)},40 Z`);
+    area.setAttribute("fill", "var(--accent-wash)"); area.setAttribute("opacity", "0.55");
+    const line = document.createElementNS(ns, "path");
+    Object.entries({ d, fill: "none", stroke: "var(--accent)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round", "vector-effect": "non-scaling-stroke" }).forEach(([k, v]) => line.setAttribute(k, v));
+    const dot = document.createElementNS(ns, "circle");
+    const last = pts[pts.length - 1];
+    Object.entries({ cx: x(last[0]), cy: y(last[1]), r: 3.5, fill: "var(--accent)", stroke: "var(--surface)", "stroke-width": 2 }).forEach(([k, v]) => dot.setAttribute(k, v));
+    svg.append(base, area, line, dot);
+    // Hover: the nearest point's value and age.
+    svg.addEventListener("mousemove", ev => {
+      const box = svg.getBoundingClientRect();
+      const tx = t0 + ((ev.clientX - box.left) / box.width) * ((t1 - t0) || 1);
+      let best = pts[0];
+      for (const p of pts) if (Math.abs(p[0] - tx) < Math.abs(best[0] - tx)) best = p;
+      tip.textContent = `${best[1].toFixed(2)} ACUs · ${ago(-best[0])}`;
+      tip.style.display = "block"; tip.style.left = `${ev.clientX + 12}px`; tip.style.top = `${ev.clientY - 28}px`;
+    });
+    svg.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+  }
+  const since = s.minutes_since_progress == null ? "" : `${s.acus_since_progress} since progress · ${s.minutes_since_progress}m`;
+  return h("div", { class: "spark" }, svg, h("div", { class: "num" }, h("b", {}, s.acus.toFixed(1)), " ACUs", h("div", {}, since)));
+}
+async function approve(id) {
+  let token = "";
+  try { token = sessionStorage.getItem("wd-token") || ""; } catch (_) {}
+  const r = await fetch("api/approve", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id: id, token }) });
+  if (r.status === 403) {
+    token = prompt("Approval token (WATCHDOG_APPROVAL_TOKEN):") || "";
+    try { sessionStorage.setItem("wd-token", token); } catch (_) {}
+    await fetch("api/approve", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id: id, token }) });
+  }
+  refresh();
+}
+function card(s, rungs) {
+  const ended = s.status === "exit" || s.status === "error";
+  const cls = ["card", s.findings.length && !ended ? "flagged" : "", s.status === "suspended" ? "asleep" : "", ended ? "ended" : ""].join(" ");
+  const title = s.url ? h("a", { href: s.url, target: "_blank", rel: "noopener" }, s.title) : s.title;
+  return h("article", { class: cls },
+    h("div", { class: "top" },
+      h("div", {}, h("div", { class: "title" }, title), h("div", { class: "sid" }, s.id, s.off ? " · watchdog:off" : "")),
+      statusPill(s)),
+    s.task && s.task !== s.title ? h("div", { class: "task" }, `Task: ${s.task}`) : null,
+    ladder(s, rungs),
+    s.findings.length ? h("div", { class: "findings" }, s.findings.map(f =>
+      h("div", { class: "finding" }, h("span", { class: `rule ${f.severity}` }, RULE_LABEL[f.rule] || f.rule),
+        h("span", {}, f.summary, f.heuristic ? h("span", { class: "guess" }, " · read from messages") : null)))) : null,
+    s.held ? h("div", { class: "held" }, s.held) : null,
+    s.pending_approval ? h("div", {}, h("button", { class: "danger", type: "button", onclick: () => approve(s.id) }, "Approve terminate")) : null,
+    sparkline(s),
+    s.recent.length ? h("div", { class: "recent" }, s.recent.slice(-2).map(m =>
+      h("div", { class: "msg" }, h("span", { class: "who" }, m.from === "devin" ? "Devin" : m.from === "watchdog" ? "Watchdog" : "User"), m.text))) : null);
+}
+function feedItem(e) {
+  const idx = ["log", "alert", "nudge", "sleep", "terminate"].indexOf(e.rung);
+  const mark = e.kind === "action" ? `r${idx}` : e.kind;
+  const head = e.kind === "action" ? `${RUNG_LABEL[e.rung]}${e.dry_run && (e.rung === "nudge" || e.rung === "sleep") ? " (dry run)" : ""}`
+    : e.kind === "held" ? "Held back" : e.kind === "judged" ? "Judge: not stuck" : e.kind === "approval" ? "Approval" : e.kind === "recovered" ? "Recovered" : "Error";
+  return h("div", { class: `ev${e.ok ? "" : " failed"}` }, h("span", { class: `mark ${mark}` }),
+    h("div", {}, h("div", { class: "head" }, head, h("span", { class: "when" }, `${e.session_id} · ${ago(e.ago)}`)),
+      h("div", { class: "detail" }, e.detail),
+      e.rules.length ? h("div", { class: "detail" }, e.rules.map(r => RULE_LABEL[r] || r).join(", ")) : null));
+}
+function render(st) {
+  const mode = document.getElementById("mode");
+  mode.textContent = st.dry_run ? "DRY RUN" : "LIVE";
+  mode.className = `mode ${st.dry_run ? "dry" : "live"}`;
+  const c = st.settings;
+  document.getElementById("cfg").textContent =
+    `cooldown ${Math.round(c.cooldown)}s · judge ${c.judge || "off"} · Teams ${c.teams ? "on" : "off"}`;
+  document.getElementById("updated").textContent = `updated ${new Date(st.now * 1000).toLocaleTimeString()}`;
+  const banner = document.getElementById("banner");
+  banner.replaceChildren(st.broken ? h("div", { class: "banner" }, `Stopped: ${st.broken}`) : "");
+  const ss = st.sessions;
+  const flagged = ss.filter(s => s.findings.length && s.status !== "exit" && s.status !== "error");
+  const burning = flagged.filter(s => s.status === "running");
+  const risk = burning.reduce((a, s) => a + Math.max(0, s.acus_since_progress), 0);
+  document.getElementById("k-risk").textContent = risk.toFixed(1);
+  document.getElementById("k-risk-sub").textContent = burning.length ? `across ${burning.length} session${burning.length > 1 ? "s" : ""}` : "nothing burning";
+  document.getElementById("k-watch").textContent = ss.length;
+  document.getElementById("k-flag").textContent = flagged.length;
+  document.getElementById("k-nudge").textContent = ss.filter(s => s.rung >= 2).length;
+  document.getElementById("k-sleep").textContent = `${ss.filter(s => s.status === "suspended").length} / ${ss.filter(s => s.pending_approval).length}`;
+  const cards = document.getElementById("cards");
+  cards.replaceChildren(...(ss.length ? ss.map(s => card(s, st.rungs)) : [h("div", { class: "empty" }, "No sessions yet. Watchdog is reading the log directory.")]));
+  document.getElementById("feed").replaceChildren(...(st.events.length ? st.events.map(feedItem) : [h("div", { class: "detail" }, "No decisions yet.")]));
+}
+async function refresh() {
+  try {
+    const r = await fetch("api/state", { cache: "no-store" });
+    render(await r.json());
+  } catch (err) {
+    document.getElementById("updated").textContent = "disconnected";
+  }
+}
+document.getElementById("theme").addEventListener("click", () => {
+  const root = document.documentElement;
+  const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  root.dataset.theme = dark ? "light" : "dark";
+  try { localStorage.setItem("wd-theme", root.dataset.theme); } catch (_) {}
+});
+try { const t = localStorage.getItem("wd-theme"); if (t) document.documentElement.dataset.theme = t; } catch (_) {}
+refresh();
+setInterval(refresh, 1500);
+</script>
+</body>
+</html>
