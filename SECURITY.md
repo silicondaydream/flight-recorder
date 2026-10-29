@@ -10,7 +10,7 @@ days for confirmed issues.
 ## The assumption
 
 **The agent being recorded is not trusted, and neither is anything it sends or
-receives.** Tool arguments, results, platform API responses and session ids can
+receives.** Tool arguments, results and anything else the agent sends or receives can
 all be shaped by whoever steers the agent. Flight Recorder's job is to keep an
 accurate record of that traffic without being steered by it, and without leaking
 what passes through it.
@@ -25,11 +25,10 @@ what passes through it.
 | Two different entries hashing alike | One canonical serialisation is hashed, not concatenated fields | `tests/test_chain.py` |
 | A tool call executed without being recorded | Calls are written before they are forwarded; `--strict` refuses to forward one that could not be written | `tests/test_proxy.py` |
 | A supervisor acting on a forged entry | `reader.follow` and `tail` yield only verified entries and stop at a break | `tests/test_reader.py` |
-| Secrets in the log | Pattern and field-name redaction before any write, then the size cap | `tests/test_redact.py`, `tests/test_proxy.py`, `tests/test_devin.py` |
+| Secrets in the log | Pattern and field-name redaction before any write, then the size cap | `tests/test_redact.py`, `tests/test_proxy.py` |
 | Other local users reading the log | Files created `0600` | `tests/test_chain.py` |
 | Altering what the agent and server see | The relay forwards every line unchanged, byte for byte | `tests/test_proxy.py` |
-| A hostile session id writing outside the log directory, or reaching another API path | Sanitised before use in a file name; percent-encoded as one URL path segment | `tests/test_devin.py` |
-| The Devin API key leaking | Read from the environment only, never a flag | `tests/test_devin.py` |
+| A hostile session id or server name writing outside the log directory | Sanitised before use in a file name | `tests/test_chain.py` |
 | A huge payload exhausting disk | Payloads over `--max-payload` are kept as a preview plus size and hash | `tests/test_redact.py`, `tests/test_proxy.py` |
 
 ## Out of scope
@@ -50,8 +49,7 @@ what passes through it.
 
 1. **The relay never changes a message.** What the agent and the server see is
    exactly what they would have seen without the recorder.
-2. **Nothing leaves the host** except the requests the Devin importer makes to
-   the API URL you configure.
+2. **Nothing leaves the host.** The core makes no network requests at all.
 3. **No secret is written on purpose.** Redaction runs before every write.
 4. **A broken chain is never extended.** The recorder refuses to append to a log
    that does not verify.

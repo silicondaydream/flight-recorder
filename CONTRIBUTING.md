@@ -23,11 +23,14 @@ make fmt       # format and auto-fix
   through `redact.keep`.
 - **Every bug fix comes with a test that fails without it.**
 - **The core stays standard-library only.** `chain`, `redact`, `proxy` and
-  `reader` take no third-party imports; importers may.
+  `reader` take no third-party imports, and the package has no runtime
+  dependencies.
 
-## Adding an importer
+## Adding a platform importer
 
-Add `src/flight_recorder/importers/<platform>.py`:
+Importers bring in what an agent did outside MCP, through a platform's API. They
+live on their own branch (see `devin`), so `main` stays vendor-neutral and
+dependency-free. On that branch, add `src/flight_recorder/importers/<platform>.py`:
 
 - Keep everything the platform's API defines (endpoints, field names) in one
   client class, so a changed API is a one-file fix.
