@@ -1,4 +1,4 @@
-"""The Devin importer, against a mock of the API: idempotent, ordered, safe."""
+"""The Devin importer, against a fake of the v3 API: idempotent, ordered, safe."""
 
 from __future__ import annotations
 
@@ -6,69 +6,26 @@ import json
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote
 
-import httpx
 import pytest
 
+from devin_watchdog.fakedevin import FakeDevin
 from flight_recorder.chain import verify_file
 from flight_recorder.cli import main
-from flight_recorder.importers.devin import DevinClient, DevinError, Importer, State
+from flight_recorder.importers.devin import DevinClient, DevinError, Importer, State, iso
 
 
-class FakeDevin:
-    """A stand-in for the Devin v1 API, holding sessions that can change."""
-
+class Clock:
     def __init__(self) -> None:
-        self.sessions: dict[str, dict[str, Any]] = {}
-        self.requests: list[httpx.Request] = []
-        self.status = 200
+        self.now = 1_793_000_000.0
 
-    def add(self, sid: str, status: str = "working", messages: int = 2, **extra: Any) -> None:
-        self.sessions[sid] = {
-            "session_id": sid,
-            "status_enum": status,
-            "title": f"task {sid}",
-            "tags": ["team-a"],
-            "updated_at": "2026-10-28T10:00:00Z",
-            "messages": [],
-            **extra,
-        }
-        for _ in range(messages):
-            self.say(sid, "devin_message", "working on it")
-
-    def say(self, sid: str, kind: str, text: str) -> None:
-        messages = self.sessions[sid]["messages"]
-        messages.append(
-            {
-                "event_id": f"{sid}-e{len(messages) + 1}",
-                "type": kind,
-                "message": text,
-                "timestamp": f"2026-10-28T10:00:{len(messages):02d}Z",
-                "origin": "web",
-            }
-        )
-
-    def handler(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        if self.status != 200:
-            return httpx.Response(self.status, text="nope")
-        if request.url.path == "/v1/sessions":
-            offset = int(request.url.params.get("offset", 0))
-            limit = int(request.url.params.get("limit", 100))
-            listed = [
-                {k: v for k, v in s.items() if k != "messages"} for s in self.sessions.values()
-            ]
-            return httpx.Response(200, json={"sessions": listed[offset : offset + limit]})
-        sid = unquote(request.url.raw_path.decode().rsplit("/", 1)[-1])
-        if sid in self.sessions:
-            return httpx.Response(200, json=self.sessions[sid])
-        return httpx.Response(404, text="no such session")
+    def __call__(self) -> float:
+        return self.now
 
 
 @pytest.fixture
 def devin() -> FakeDevin:
-    return FakeDevin()
+    return FakeDevin(clock=Clock())
 
 
 Make = Callable[..., Importer]
@@ -79,8 +36,8 @@ def make(devin: FakeDevin, tmp_path: Path) -> Iterator[Make]:
     """Build importers the way separate runs would, closing each one after the test."""
     made: list[Importer] = []
 
-    def build(**kw: Any) -> Importer:
-        client = DevinClient("test-key", transport=httpx.MockTransport(devin.handler))
+    def build(org_id: str | None = None, **kw: Any) -> Importer:
+        client = DevinClient("cog_test", org_id=org_id, transport=devin.transport())
         importer = Importer(client, tmp_path / "logs", State(tmp_path / "state.db"), **kw)
         made.append(importer)
         return importer
@@ -96,67 +53,93 @@ def _entries(path: Path) -> list[dict[str, Any]]:
 
 
 def test_a_session_becomes_a_verified_log(devin: FakeDevin, tmp_path: Path, make: Make) -> None:
-    devin.add("s1")
+    devin.add("devin-s1", messages=2)
     summary = make().run()
     assert (summary.sessions, summary.messages, summary.status_changes) == (1, 2, 1)
     log = tmp_path / "logs" / "devin-s1.ndjson"
     assert verify_file(log).valid
     actions = [e["event"]["action"] for e in _entries(log)]
-    assert actions == ["session.snapshot", "session.status", "message", "message"]
-    message = _entries(log)[2]
-    assert message["@timestamp"] == "2026-10-28T10:00:00Z"  # when it happened
-    assert message["agent"]["name"] == "devin" and message["session"]["id"] == "s1"
+    assert actions == ["session.snapshot", "message", "message", "session.status"]
+    message = _entries(log)[1]
+    assert message["@timestamp"] == iso(1_793_000_000)  # when it happened, not when read
+    assert message["agent"]["name"] == "devin" and message["session"]["id"] == "devin-s1"
+    assert message["flight"]["from"] == "devin"
     assert message["flight"]["text"]["value"] == "working on it"
+    status = _entries(log)[3]["flight"]
+    assert (status["status"], status["status_detail"]) == ("running", "working")
 
 
-def test_the_key_is_sent_as_a_bearer_token(devin: FakeDevin, tmp_path: Path, make: Make) -> None:
-    devin.add("s1")
+def test_the_org_comes_from_the_key_unless_given(devin: FakeDevin, make: Make) -> None:
+    devin.add("devin-s1")
     make().run()
-    assert devin.requests[0].headers["authorization"] == "Bearer test-key"
+    assert devin.requests[0] == ("GET", "/v3/self")
+    assert devin.requests[1] == ("GET", "/v3/organizations/org-demo/sessions")
+
+    devin.requests.clear()
+    make(org_id="org-demo").run()
+    assert ("GET", "/v3/self") not in devin.requests
 
 
 def test_a_second_run_records_only_what_is_new(
     devin: FakeDevin, tmp_path: Path, make: Make
 ) -> None:
-    devin.add("s1")
+    devin.add("devin-s1", messages=2)
     make().run()
     again = make().run()  # a fresh process: state comes from disk
     assert (again.messages, again.status_changes, again.snapshots) == (0, 0, 0)
 
-    devin.say("s1", "user_message", "please also update the docs")
-    devin.sessions["s1"]["status_enum"] = "blocked"
-    devin.sessions["s1"]["updated_at"] = "2026-10-28T10:05:00Z"
+    devin.say("devin-s1", "user", "please also update the docs")
+    devin.update("devin-s1", status_detail="waiting_for_user")
     third = make().run()
     assert (third.messages, third.status_changes) == (1, 1)
 
     log = tmp_path / "logs" / "devin-s1.ndjson"
     assert verify_file(log).valid  # the chain was extended, not forked
-    status = [e for e in _entries(log) if e["event"]["action"] == "session.status"]
-    assert [(s["flight"]["previous_status"], s["flight"]["status"]) for s in status] == [
+    status = [e["flight"] for e in _entries(log) if e["event"]["action"] == "session.status"]
+    assert [(s["previous_status_detail"], s["status_detail"]) for s in status] == [
         (None, "working"),
-        ("working", "blocked"),
+        ("working", "waiting_for_user"),
     ]
 
 
-def test_every_page_of_sessions_is_read(devin: FakeDevin, tmp_path: Path, make: Make) -> None:
-    for i in range(130):
-        devin.add(f"s{i:03d}", messages=0)
-    assert make().run().sessions == 130
+def test_later_polls_ask_only_for_what_changed(devin: FakeDevin, make: Make) -> None:
+    devin.add("devin-s1", messages=1)
+    make().run()
+    devin.requests.clear()
+    make().run()
+    listed = [p for m, p in devin.requests if p.endswith("/sessions")]
+    assert listed and not any(p.endswith("/messages") for _, p in devin.requests)
 
 
-def test_unknown_session_fields_are_kept_in_the_snapshot(
+def test_every_page_of_sessions_and_messages_is_read(
     devin: FakeDevin, tmp_path: Path, make: Make
 ) -> None:
-    # Whatever the API adds (usage, ACUs, PR links) is recorded without code changes.
-    devin.add("s1", messages=0, acus_consumed=3.5, pull_request={"url": "https://x.example/pr/1"})
+    devin.page = 7
+    for i in range(20):
+        devin.add(f"devin-s{i:02d}")
+    for _ in range(16):
+        devin.say("devin-s00", "devin", "step")
+    summary = make().run()
+    assert summary.sessions == 20 and summary.messages == 16
+
+
+def test_usage_and_prs_are_kept_in_the_snapshot(
+    devin: FakeDevin, tmp_path: Path, make: Make
+) -> None:
+    devin.add(
+        "devin-s1",
+        acus_consumed=3.5,
+        pull_requests=[{"pr_url": "https://x.example/pr/1", "pr_state": "open"}],
+    )
     make().run()
-    snapshot = _entries(tmp_path / "logs" / "devin-s1.ndjson")[0]
-    assert snapshot["flight"]["session"]["value"]["acus_consumed"] == 3.5
+    snapshot = _entries(tmp_path / "logs" / "devin-s1.ndjson")[0]["flight"]["session"]["value"]
+    assert snapshot["acus_consumed"] == 3.5
+    assert snapshot["pull_requests"][0]["pr_state"] == "open"
 
 
 def test_secrets_in_messages_are_redacted(devin: FakeDevin, tmp_path: Path, make: Make) -> None:
-    devin.add("s1", messages=0)
-    devin.say("s1", "devin_message", "export GITHUB_TOKEN=ghp_" + "q" * 36)
+    devin.add("devin-s1")
+    devin.say("devin-s1", "devin", "export GITHUB_TOKEN=ghp_" + "q" * 36)
     make().run()
     text = (tmp_path / "logs" / "devin-s1.ndjson").read_text(encoding="utf-8")
     assert "ghp_" + "q" * 36 not in text and "REDACTED" in text
@@ -166,24 +149,36 @@ def test_a_hostile_session_id_cannot_escape_the_log_directory(
     devin: FakeDevin, tmp_path: Path, make: Make
 ) -> None:
     devin.add("../../escape", messages=1)
-    importer = make()
-    importer.run()
-    # The id was sent encoded, as one path segment, not as "../.." in the URL.
-    detail = [r for r in devin.requests if r.url.path != "/v1/sessions"]
-    assert detail and b"..%2F..%2Fescape" in detail[0].url.raw_path
+    make().run()
     logs = list((tmp_path / "logs").glob("*.ndjson"))
     assert [p.name for p in logs] == ["devin-escape.ndjson"]
+    assert not (tmp_path.parent / "escape.ndjson").exists()
+
+
+def test_a_hostile_session_id_is_one_url_segment() -> None:
+    seen: list[bytes] = []
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.raw_path)
+        return httpx.Response(200, json={"items": []})
+
+    client = DevinClient("k", org_id="org-x", transport=httpx.MockTransport(handler))
+    client.messages("../../escape")
+    client.close()
+    assert seen == [b"/v3/organizations/org-x/sessions/..%2F..%2Fescape/messages?first=200"]
 
 
 def test_devins_own_id_prefix_is_not_doubled(devin: FakeDevin, tmp_path: Path, make: Make) -> None:
     devin.add("devin-0a1b2c", messages=1)
+    devin.add("plain", messages=1)
     make().run()
-    assert [p.name for p in (tmp_path / "logs").glob("*.ndjson")] == ["devin-0a1b2c.ndjson"]
-    assert not (tmp_path.parent / "escape.ndjson").exists()
+    names = sorted(p.name for p in (tmp_path / "logs").glob("*.ndjson"))
+    assert names == ["devin-0a1b2c.ndjson", "devin-plain.ndjson"]
 
 
 def test_dry_run_writes_nothing(devin: FakeDevin, tmp_path: Path, make: Make) -> None:
-    devin.add("s1")
+    devin.add("devin-s1", messages=2)
     summary = make(dry_run=True).run()
     assert len(summary.planned) == 4  # snapshot, status, two messages
     assert not (tmp_path / "logs").exists()
@@ -195,6 +190,12 @@ def test_a_rejected_key_is_reported_plainly(devin: FakeDevin, tmp_path: Path, ma
     devin.status = 401
     with pytest.raises(DevinError, match="DEVIN_API_KEY"):
         make().run()
+
+
+def test_epoch_timestamps_become_rfc3339() -> None:
+    assert iso(1_793_000_000) == "2026-10-26T07:33:20.000Z"
+    assert iso(1_793_000_000_123) == "2026-10-26T07:33:20.123Z"
+    assert iso(None) is None
 
 
 def test_the_cli_requires_the_key_in_the_environment(

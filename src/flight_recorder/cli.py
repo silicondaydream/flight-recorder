@@ -110,7 +110,8 @@ def _import_devin(args: argparse.Namespace) -> int:
         print("flight-recorder: set DEVIN_API_KEY", file=sys.stderr)
         return 2
     log_dir = Path(args.log_dir)
-    client = DevinClient(api_key, base_url=args.base_url)
+    org_id = args.org_id or os.environ.get("DEVIN_ORG_ID") or None
+    client = DevinClient(api_key, org_id=org_id, base_url=args.base_url)
     state = State(Path(args.state) if args.state else default_state_dir() / "devin-state.db")
     importer = Importer(
         client,
@@ -123,7 +124,8 @@ def _import_devin(args: argparse.Namespace) -> int:
     try:
         while True:
             try:
-                summary = importer.run(tags=args.tag or None)
+                since = int(time.time() - args.since_hours * 3600) if args.since_hours else None
+                summary = importer.run(tags=args.tag or None, since=since)
             except DevinError as exc:
                 print(f"flight-recorder: {exc}", file=sys.stderr)
                 if not args.watch or "DEVIN_API_KEY" in str(exc):
@@ -212,15 +214,25 @@ def main(argv: list[str] | None = None) -> int:
     devin = sources.add_parser(
         "devin",
         help="import Devin sessions (messages, status changes, metadata)",
-        description="Reads DEVIN_API_KEY from the environment. One log per session, "
-        "extended on every run; already-recorded messages are skipped.",
+        description="Reads DEVIN_API_KEY (a service-user key, cog_...) and optionally "
+        "DEVIN_ORG_ID from the environment. One log per session, extended on every run; "
+        "already-recorded messages are skipped.",
     )
     devin.add_argument("--log-dir", default=str(default_log_dir()), help="where logs go")
     devin.add_argument(
         "--state",
         help="importer state database (default: ~/.local/state/flight-recorder/devin-state.db)",
     )
-    devin.add_argument("--base-url", default="https://api.devin.ai/v1", help="Devin API base URL")
+    devin.add_argument("--base-url", default="https://api.devin.ai", help="Devin API base URL")
+    devin.add_argument(
+        "--org-id", help="organization (default: $DEVIN_ORG_ID, else the key's own, via /v3/self)"
+    )
+    devin.add_argument(
+        "--since-hours",
+        type=float,
+        default=24.0,
+        help="first run only: sessions updated in the last N hours (0: all; default: 24)",
+    )
     devin.add_argument(
         "--tag", action="append", default=[], help="only sessions with this tag (repeatable)"
     )
