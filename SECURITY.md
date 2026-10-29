@@ -28,7 +28,9 @@ what passes through it.
 | Secrets in the log | Pattern and field-name redaction before any write, then the size cap | `tests/test_redact.py`, `tests/test_proxy.py` |
 | Other local users reading the log | Files created `0600` | `tests/test_chain.py` |
 | Altering what the agent and server see | The relay forwards every line unchanged, byte for byte | `tests/test_proxy.py` |
-| A hostile session id or server name writing outside the log directory | Sanitised before use in a file name | `tests/test_chain.py` |
+| A hostile session id or server name writing outside the log directory | Sanitised before use in a file name | `tests/test_chain.py`, `tests/test_devin.py` |
+| A hostile Devin session id reaching another API path | Percent-encoded as one URL path segment | `tests/test_devin.py` |
+| The Devin API key leaking | Read from the environment only, never a flag | `tests/test_devin.py` |
 | A huge payload exhausting disk | Payloads over `--max-payload` are kept as a preview plus size and hash | `tests/test_redact.py`, `tests/test_proxy.py` |
 
 ## Out of scope
@@ -49,7 +51,8 @@ what passes through it.
 
 1. **The relay never changes a message.** What the agent and the server see is
    exactly what they would have seen without the recorder.
-2. **Nothing leaves the host.** The core makes no network requests at all.
+2. **Nothing leaves the host** except the requests the Devin importer makes to
+   the API URL you configure. The core makes none.
 3. **No secret is written on purpose.** Redaction runs before every write.
 4. **A broken chain is never extended.** The recorder refuses to append to a log
    that does not verify.

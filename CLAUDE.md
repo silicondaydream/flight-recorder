@@ -19,6 +19,12 @@ Also checked by hand:
 npm server was blocked in the build sandbox. Try
 `@modelcontextprotocol/server-everything` in a real client.
 
+**Not checked yet: the Devin API.** Devin's docs and API were unreachable from
+the sandbox. The importer follows the v1 API as known: `GET /v1/sessions` and
+`GET /v1/session/{id}`, with `messages[]` holding `event_id`, `type`, `message`
+and `timestamp`. Run `import devin --dry-run` with a real key, and fix
+`DevinClient` / `_message_key` if the fields differ.
+
 ## Branches
 
 - `main` — the general recorder: proxy, chain, redaction, verify and tail. No
@@ -28,6 +34,10 @@ npm server was blocked in the build sandbox. Try
 
 ## 2. Next
 
+0. **(devin) Verify the importer against the live API**, as above. Then check
+   whether the API exposes the commands a session ran, not only its messages. If
+   it does, record them as `shell.command` entries: Watchdog's "repeated failing
+   commands" and "edit thrash" rules need them.
 1. **Streamable HTTP MCP proxy.** Only stdio servers today. Many hosted servers
    are HTTP.
 2. **Anchoring.** `verify --head` prints the head hash; nothing stores it. A
@@ -36,6 +46,13 @@ npm server was blocked in the build sandbox. Try
 3. **Lincoln's audit chain has the ambiguity fixed here.** It concatenates fields
    with no separators. That is a Lincoln issue, worth filing there.
 4. **Site docs.** Add `/docs/flight-recorder/` to arboria-foundation.
+
+## Watchdog (the work task this branch serves)
+
+Watchdog is a supervisor that notices stuck or drifting Devin sessions. It is a
+separate program that reads `reader.follow()`. Flight Recorder records; Watchdog
+judges and acts (alerts, nudges, sleep, terminate) and can record its own
+actions as entries. `docs/devin.md` maps its rules to recorded fields.
 
 ## Out of scope — do not add
 

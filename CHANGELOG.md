@@ -21,4 +21,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   preview plus size and SHA-256.
 - **`flight-recorder verify` and `tail`**, and `reader.follow()`, a live feed of
   verified entries from a file or a directory.
-- Docs: the log format, and querying with Lincoln.
+- **`flight-recorder import devin`** (this branch). Devin sessions' messages,
+  status changes and metadata, through the API. Idempotent, with `--watch`,
+  `--tag` and `--dry-run`. State is kept outside the log directory.
+- Docs: the log format, querying with Lincoln, and Devin and supervisors.

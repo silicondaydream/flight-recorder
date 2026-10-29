@@ -54,8 +54,9 @@ mapping.
 | `tool.result` | proxy | `tool`, `request_id`, `result` (or the JSON-RPC error) |
 | `recorder.error` | proxy | `side`, `error`, `line`: something relayed that could not be read |
 | `session.end` | proxy | `exit_code`, `messages` (counts by method), `unanswered` (tools) |
-
-Importers (on their own branches) add their own actions, documented there.
+| `session.snapshot` | Devin import | `session`: every metadata field the API returned |
+| `session.status` | Devin import | `status`, `previous_status` |
+| `message` | Devin import | `type`, `origin`, `username`, `event_id`, `text` |
 
 ## Kept payloads
 

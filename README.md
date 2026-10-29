@@ -50,8 +50,8 @@ make setup            # Python 3.11+: venv + pip install -e ".[dev]"
 make check            # ruff, mypy --strict, tests
 ```
 
-Flight Recorder has no third-party runtime dependencies: only the Python
-standard library.
+The core uses only the Python standard library. This branch adds `httpx`, for the
+Devin importer.
 
 ## Record an MCP server
 
@@ -88,15 +88,24 @@ runs without its record.
 | `--redact REGEX` | Redact more than the built-in secret patterns (repeatable) |
 | `--strict` | Stop rather than forward a call that could not be recorded |
 
-## Agent platforms
+## Import Devin sessions
 
-Some agents also act outside MCP, in a platform's own shell or editor. Importers
-that bring those sessions in through the platform's API live on their own
-branches, so the core stays vendor-neutral and dependency-free:
+> This is the `devin` branch: `main` plus a Devin importer. `main` stays
+> vendor-neutral; merge `main` into this branch to pick up core changes.
 
-| Branch | Platform |
-|---|---|
-| [`devin`](../../tree/devin) | Devin: messages, status changes and session metadata through the Devin API |
+Devin runs its own shell and editor, outside MCP, so its sessions come in
+through the API:
+
+```console
+export DEVIN_API_KEY=…
+flight-recorder import devin --dry-run          # what would be recorded
+flight-recorder import devin                    # one log per session
+flight-recorder import devin --watch --interval 60 --tag team-a
+```
+
+Messages, status changes and session metadata are recorded, and repeated runs add
+only what is new. See [docs/devin.md](docs/devin.md), including how this feeds an
+agent supervisor such as Watchdog.
 
 ## Read, verify, query
 
@@ -127,12 +136,14 @@ More queries are in [docs/lincoln.md](docs/lincoln.md). The entry format is in
 - **Redaction is pattern-based.** It catches common token formats and named
   fields, not every secret.
 - **Only stdio MCP servers, for now.** Streamable HTTP servers are next.
+- **The Devin importer was written against the v1 API without access to its
+  live docs.** Check it with `--dry-run` on your organisation first.
 
 ## Status
 
-**v0.1, early and working.** `make check` passes (ruff, `mypy --strict`, 56
+**v0.1, early and working.** `make check` passes (ruff, `mypy --strict`, 67
 tests). The tests run real child processes and cover tampering, redaction
-and relay fidelity.
+and relay fidelity, and the Devin importer against a mocked API.
 
 ## License
 

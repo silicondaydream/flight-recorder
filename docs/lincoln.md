@@ -35,6 +35,12 @@ Every session that called a given tool:
 event.action = "tool.call" flight.tool = "run_shell" | stats count() as calls by session.id
 ```
 
+Devin sessions that went to `blocked`:
+
+```
+agent.name = "devin" event.action = "session.status" flight.status = "blocked" | fields @timestamp, session.id
+```
+
 Something hidden in a payload, anywhere:
 
 ```
