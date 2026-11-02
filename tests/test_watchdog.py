@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
@@ -525,3 +527,15 @@ def test_the_dashboard_serves_state_and_guards_approval(rig: Any) -> None:
     finally:
         server.shutdown()
         server.server_close()
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs node to parse the page's script")
+def test_the_dashboard_script_parses(tmp_path: Path) -> None:
+    page = (Path(__file__).parent.parent / "src/devin_watchdog/dashboard.html").read_text("utf-8")
+    script = tmp_path / "dashboard.js"
+    script.write_text(page.split("<script>", 1)[1].split("</script>", 1)[0], encoding="utf-8")
+    node = shutil.which("node") or "node"
+    done = subprocess.run(
+        [node, "--check", str(script)], capture_output=True, text=True, check=False
+    )
+    assert done.returncode == 0, done.stderr

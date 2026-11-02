@@ -51,7 +51,7 @@ def serve(
                 self._json(404, {"error": "not found"})
 
         def do_POST(self) -> None:
-            if self.path != "/api/approve":
+            if self.path not in ("/api/approve", "/api/decline"):
                 return self._json(404, {"error": "not found"})
             # A JSON content type forces a CORS preflight, which this server never
             # answers: another site open in the browser cannot post here.
@@ -66,8 +66,12 @@ def serve(
             allowed = hmac.compare_digest(given, token) if token else host in LOOPBACK
             if not allowed:
                 return self._json(403, {"error": "approval token required"})
-            ok = engine.approve(str(body.get("session_id", "")), by="dashboard")
-            self._json(200 if ok else 409, {"approved": ok})
+            sid = str(body.get("session_id", ""))
+            if self.path == "/api/approve":
+                ok = engine.approve(sid, by="dashboard")
+            else:
+                ok = engine.decline(sid, by="dashboard")
+            self._json(200 if ok else 409, {"ok": ok})
 
     server = ThreadingHTTPServer((host, port), Handler)
     threading.Thread(target=server.serve_forever, name="dashboard", daemon=True).start()

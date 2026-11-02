@@ -8,6 +8,15 @@ Five sessions run on a local fake of the v3 API, each showing one behaviour:
     migrate    blocked on credentials, then waiting on a human: alerts only.
     search     just as stuck, but tagged watchdog:off: held, never touched.
     readme     drifts off-task, gets nudged, comes back: recovers.
+    api        works through the watchdog-tools MCP server, so every command,
+               exit code and edit is exact. Stuck in a loop, it is slept; a
+               teammate wakes it, it is still stuck, and Watchdog asks for
+               approval to terminate: the Teams card's signed links, shown in
+               the decisions feed, open the approval page.
+
+The api session's tool calls really run: a real `flight-recorder proxy` in
+front of a real `watchdog tools`, in a scratch workspace, shipping its log to
+Watchdog's public listener over `/api/ingest`.
 
 Everything real runs: the importer polls over HTTP, entries are chained and
 verified, the engine sends real requests (to the fake) and Teams cards (to the
@@ -17,6 +26,10 @@ fake's /teams). Only Devin is pretend.
 from __future__ import annotations
 
 import itertools
+import json
+import os
+import subprocess
+import sys
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,6 +43,7 @@ DOCS = "devin-demo-docs"
 MIGRATE = "devin-demo-migrate"
 SEARCH = "devin-demo-search"
 README = "devin-demo-readme"
+API_ID = "5f0c1e2a9b7d4c6e8a1f3b2d"  # what Devin would read from its session link
 
 STUCK = [
     "Running `npm test -- checkout.spec.ts`. It failed: Error: Cannot find module "
@@ -96,6 +110,11 @@ class Scenario:
         fake.add(MIGRATE, title="Migrate the billing database to Postgres 16")
         fake.add(SEARCH, title="Fix search indexing dropping documents", tags=["watchdog:off"])
         fake.add(README, title="Update the README badges after the CI rename")
+        fake.add(f"devin-{API_ID}", title="Fix the failing API client tests")
+        fake.say(f"devin-{API_ID}", "user", "The API client unit tests started failing; fix them.")
+        fake.say(f"devin-{API_ID}", "devin", "Looking at the API client tests now.")
+        self._asleep_steps = 0
+        self.woken = False
         fake.say(CHECKOUT, "user", "The checkout test fails about half the time on CI. Fix it.")
         fake.say(README, "user", "Our CI workflows were renamed; update the README badges.")
         self._stuck = itertools.cycle(STUCK)
@@ -130,6 +149,17 @@ class Scenario:
             self._docs()
             self._migrate()
             self._readme()
+            self._api()
+
+    def _api(self) -> None:
+        sid = f"devin-{API_ID}"
+        if self._running(sid):
+            self._spend(sid, 0.4)
+        elif self.fake.sessions[sid]["status"] == "suspended" and not self.woken:
+            self._asleep_steps += 1
+            if self._asleep_steps >= 3:  # a teammate wakes it from the web app
+                self.woken = True
+                self.fake.update(sid, status="running", status_detail="working", is_archived=False)
 
     def _docs(self) -> None:
         index = self.step - 1
@@ -215,6 +245,107 @@ def start(step: float, stop: threading.Event) -> tuple[FakeDevin, Scenario, str]
     threading.Thread(target=drive, name="scenario", daemon=True).start()
     host, port = server.server_address[:2]
     return fake, scenario, f"http://{host!s}:{port}"
+
+
+TEST = """import unittest
+
+from api_client import Client  # the module is api/client.py; nobody notices the name
+
+
+class ClientTest(unittest.TestCase):
+    def test_get(self):
+        self.assertEqual(Client().get("/health"), 200)
+"""
+
+
+class McpAgent:
+    """Plays Devin driving the watchdog-tools MCP server, through the real proxy."""
+
+    def __init__(self, work: Path, ingest_url: str, token: str, fake: FakeDevin) -> None:
+        self.fake, self.sid = fake, f"devin-{API_ID}"
+        self.workspace = work / "workspace"
+        (self.workspace / "tests").mkdir(parents=True, exist_ok=True)
+        (self.workspace / "api").mkdir(exist_ok=True)
+        (self.workspace / "tests" / "test_client.py").write_text(TEST, encoding="utf-8")
+        vm_logs = work / "session-machine-logs"  # stands in for the Devin VM's disk
+        env = {
+            **os.environ,
+            "FLIGHT_RECORDER_DIR": str(vm_logs),
+            "WATCHDOG_INGEST_URL": ingest_url,
+            "WATCHDOG_INGEST_TOKEN": token,
+        }
+        command = [
+            sys.executable, "-m", "flight_recorder.cli", "proxy", "--log-dir", str(vm_logs),
+            "--name", "watchdog-tools", "--",
+            sys.executable, "-m", "devin_watchdog.cli", "tools",
+        ]  # fmt: skip
+        self._stderr = (work / "mcp-agent.log").open("w", encoding="utf-8")
+        self.proc = subprocess.Popen(
+            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._stderr,
+            text=True, env=env, cwd=self.workspace,
+        )  # fmt: skip
+        self._id = 0
+        self.attempt = 0
+
+    def call(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        if self.proc.stdin is None or self.proc.stdout is None:
+            raise RuntimeError("the MCP agent's pipes are closed")
+        self._id += 1
+        message = {"jsonrpc": "2.0", "id": self._id, "method": method, "params": params or {}}
+        self.proc.stdin.write(json.dumps(message) + "\n")
+        self.proc.stdin.flush()
+        line = self.proc.stdout.readline()
+        return json.loads(line) if line else None
+
+    def tool(self, name: str, **arguments: Any) -> Any:
+        return self.call("tools/call", {"name": name, "arguments": arguments})
+
+    def start(self) -> None:
+        self.call("initialize", {"protocolVersion": "2025-06-18", "clientInfo": {"name": "devin"}})
+        self.tool("link_session", session=f"https://app.devin.ai/sessions/{API_ID}")
+
+    def step(self) -> None:
+        session = self.fake.sessions[self.sid]
+        if session["status"] != "running":
+            return
+        self.attempt += 1
+        # Stuck: rewrites the module it thinks is wrong, re-runs the same test.
+        self.tool(
+            "write_file",
+            path=str(self.workspace / "api" / "client.py"),
+            content=f"class Client:  # attempt {self.attempt}\n    def get(self, path):\n"
+            "        return 200\n",
+        )
+        self.tool(
+            "run_command", command="python3 -m unittest tests.test_client", cwd=str(self.workspace)
+        )
+
+    def close(self) -> None:
+        if self.proc.stdin is not None:
+            self.proc.stdin.close()
+        try:
+            self.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait()
+        if self.proc.stdout is not None:
+            self.proc.stdout.close()
+        self._stderr.close()
+
+
+def start_mcp_agent(
+    work: Path, ingest_url: str, token: str, fake: FakeDevin, step: float, stop: threading.Event
+) -> McpAgent:
+    agent = McpAgent(work, ingest_url, token, fake)
+
+    def drive() -> None:
+        agent.start()
+        while not stop.wait(step):
+            agent.step()
+        agent.close()
+
+    threading.Thread(target=drive, name="mcp-agent", daemon=True).start()
+    return agent
 
 
 def workdir(given: str | None) -> Path:

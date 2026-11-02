@@ -1,4 +1,4 @@
-"""watchdog run | demo | approve | replay"""
+"""watchdog run | demo | approve | decline | replay | tools | mcp-setup"""
 
 from __future__ import annotations
 
@@ -43,6 +43,33 @@ def _hostport(value: str) -> tuple[str, int]:
     return host or "127.0.0.1", int(port)
 
 
+def _public(engine: Watchdog, address: str, log_dir: Path, ingest_token: str) -> tuple[str, Any]:
+    """Start the public listener (ingest + approval pages). Returns its URL."""
+    from devin_watchdog.ingest import IngestStore
+    from devin_watchdog.public import serve_public
+
+    host, port = _hostport(address)
+    server = serve_public(
+        engine,
+        IngestStore(log_dir) if ingest_token else None,
+        engine.signer,
+        host,
+        port,
+        ingest_token=ingest_token,
+    )
+    bound_host, bound_port = server.server_address[:2]
+    return f"http://{bound_host!s}:{bound_port}", server
+
+
+def _signer(public_url: str) -> Any:
+    from devin_watchdog.approvals import Signer
+
+    key = os.environ.get("WATCHDOG_APPROVAL_TOKEN", "")
+    if not public_url or not key:
+        return None
+    return Signer(key, public_url)
+
+
 def _serve(engine: Watchdog, address: str) -> str:
     from devin_watchdog.dashboard import serve
 
@@ -71,6 +98,7 @@ def _run(args: argparse.Namespace) -> int:
         thresholds=Thresholds(),
     )
     webhook = os.environ.get("TEAMS_WEBHOOK_URL", "")
+    public_url = os.environ.get("WATCHDOG_PUBLIC_URL", "")
     engine = Watchdog(
         settings,
         State(Path(args.state)),
@@ -78,7 +106,18 @@ def _run(args: argparse.Namespace) -> int:
         teams=Teams(webhook) if webhook else None,
         judge=_judge(args.judge_model or os.environ.get("WATCHDOG_JUDGE_MODEL")),
         record_dir=log_dir / "watchdog",
+        signer=_signer(public_url),
     )
+    if args.public:
+        ingest_token = os.environ.get("WATCHDOG_INGEST_TOKEN", "")
+        url, _ = _public(engine, args.public, log_dir, ingest_token)
+        print(
+            f"watchdog: public listener on {url} (ingest {'on' if ingest_token else 'off'}, "
+            f"approval links {'on' if engine.signer else 'off'})",
+            file=sys.stderr,
+        )
+    elif public_url:
+        print("watchdog: WATCHDOG_PUBLIC_URL is set but --public is not", file=sys.stderr)
     stop = threading.Event()
     if api_key and not args.no_import:
         state_db = default_state_dir() / "devin-state.db"
@@ -106,8 +145,11 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _demo(args: argparse.Namespace) -> int:
+    import secrets
+
     from devin_watchdog import demo
     from devin_watchdog.actions import DevinActions, Teams
+    from devin_watchdog.approvals import Signer
     from devin_watchdog.runner import loop, start_feed, start_importer
     from flight_recorder.importers.devin import DevinClient, Importer
     from flight_recorder.importers.devin import State as ImportState
@@ -116,6 +158,8 @@ def _demo(args: argparse.Namespace) -> int:
     fake, _, base_url = demo.start(args.step, stop)
     work = demo.workdir(args.dir)
     log_dir = work / "logs"
+    ingest_token = secrets.token_urlsafe(24)
+    browser_host = "127.0.0.1" if args.host in ("0.0.0.0", "::") else args.host  # noqa: S104
     settings = Settings(
         dry_run=args.dry_run,
         cooldown=args.cooldown,
@@ -129,6 +173,7 @@ def _demo(args: argparse.Namespace) -> int:
         teams=Teams(f"{base_url}/teams"),
         judge=_judge(args.judge_model),
         record_dir=log_dir / "watchdog",
+        signer=Signer(secrets.token_urlsafe(24), f"http://{browser_host}:{args.port + 1}"),
     )
 
     def make() -> Importer:
@@ -139,7 +184,11 @@ def _demo(args: argparse.Namespace) -> int:
     start_importer(make, args.step / 2, stop)
     feed = start_feed(log_dir, stop, poll=0.25)
     url = _serve(engine, f"{args.host}:{args.port}")
+    public, _ = _public(engine, f"{args.host}:{args.port + 1}", log_dir, ingest_token)
+    ingest = f"http://127.0.0.1:{args.port + 1}/api/ingest"
+    demo.start_mcp_agent(work, ingest, ingest_token, fake, args.step, stop)
     print(f"watchdog demo: dashboard on {url}", file=sys.stderr)
+    print(f"watchdog demo: public listener (ingest, approval pages) on {public}", file=sys.stderr)
     print(f"watchdog demo: logs in {log_dir}", file=sys.stderr)
     runner = threading.Thread(target=loop, args=(engine, feed, stop, 1.0), daemon=True)
     runner.start()
@@ -152,6 +201,7 @@ def _demo(args: argparse.Namespace) -> int:
     finally:
         stop.set()
         runner.join(timeout=5)
+        time.sleep(1.0)  # let the MCP agent close its session
         engine.close()
     sent = ", ".join(f"{sid}: {text[:60]}" for sid, text in fake.sent) or "none"
     print(f"watchdog demo: messages sent to sessions: {sent}", file=sys.stderr)
@@ -164,11 +214,59 @@ def _approve(args: argparse.Namespace) -> int:
     ladder = state.get(args.session)
     if not ladder.pending:
         print(f"watchdog: {args.session} is not waiting for approval", file=sys.stderr)
+        state.close()
         return 1
-    ladder.approved_at, ladder.approved_by = time.time(), getpass.getuser()
+    if args.command == "approve":
+        ladder.approved_at, ladder.approved_by = time.time(), getpass.getuser()
+        done = "approved terminating"
+    else:
+        ladder.pending, ladder.declined_by = False, getpass.getuser()
+        ladder.last_action = time.time()
+        done = "declined terminating"
     state.put(args.session, ladder)
     state.close()
-    print(f"watchdog: approved terminating {args.session}; applied on the next tick")
+    print(f"watchdog: {done} {args.session}; applied on the next tick")
+    return 0
+
+
+def _tools(args: argparse.Namespace) -> int:
+    from devin_watchdog import tools
+
+    return tools.main()
+
+
+KNOWLEDGE = """\
+Watchdog tools (MCP server "watchdog-tools"):
+- At the start of every session, before anything else, call `link_session` with this
+  session's link (https://app.devin.ai/sessions/...).
+- Run every test, build, install, lint and other shell command with `run_command`.
+- Make file changes with `edit_file` or `write_file`.
+These calls are recorded so that a supervisor can tell when a session is stuck.
+"""
+
+
+def _mcp_setup(args: argparse.Namespace) -> int:
+    import json
+
+    config = {
+        "transport": "STDIO",
+        "command": "flight-recorder",
+        "args": ["proxy", "--name", "watchdog-tools", "--", "watchdog", "tools"],
+        "env": {
+            "WATCHDOG_INGEST_URL": f"{args.public_url.rstrip('/')}/api/ingest",
+            "WATCHDOG_INGEST_TOKEN": "$WATCHDOG_INGEST_TOKEN",
+        },
+    }
+    print("1. Install on Devin's machine (environment / blueprint step):\n")
+    print(f"   pip install 'git+{args.repo}@devin'\n")
+    print("2. Add a custom MCP server (Customize -> MCPs -> custom, STDIO):\n")
+    print("   " + json.dumps(config, indent=2).replace("\n", "\n   ") + "\n")
+    print(
+        "   Store WATCHDOG_INGEST_TOKEN as a Devin secret and reference it here, rather\n"
+        "   than pasting the value (see Devin's MCP docs on secrets).\n"
+    )
+    print("3. Add this as organization Knowledge, so Devin uses the tools:\n")
+    print("   " + KNOWLEDGE.replace("\n", "\n   "))
     return 0
 
 
@@ -253,6 +351,12 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument(
         "--dashboard", default="127.0.0.1:8765", help="HOST:PORT for the dashboard ('' for none)"
     )
+    run.add_argument(
+        "--public",
+        default="",
+        help="HOST:PORT for the public listener: MCP log ingest (WATCHDOG_INGEST_TOKEN) and "
+        "Teams approval links (WATCHDOG_PUBLIC_URL, WATCHDOG_APPROVAL_TOKEN). Off by default",
+    )
     run.set_defaults(func=_run)
 
     demo = sub.add_parser("demo", help="the full pipeline against a scripted fake Devin")
@@ -265,10 +369,29 @@ def main(argv: list[str] | None = None) -> int:
     demo.add_argument("--dry-run", action="store_true", help="hold back nudges and sleeps")
     demo.set_defaults(func=_demo)
 
-    approve = sub.add_parser("approve", help="allow a pending terminate")
-    approve.add_argument("session")
-    approve.add_argument("--state", default=default_state)
-    approve.set_defaults(func=_approve)
+    for name, text in (("approve", "allow a pending terminate"), ("decline", "keep it running")):
+        decide = sub.add_parser(name, help=text)
+        decide.add_argument("session")
+        decide.add_argument("--state", default=default_state)
+        decide.set_defaults(func=_approve)
+
+    tools = sub.add_parser(
+        "tools",
+        help="the shell/editor MCP server for Devin (run it behind `flight-recorder proxy`)",
+        description="A stdio MCP server: run_command, edit_file, write_file, read_file, "
+        "link_session. With WATCHDOG_INGEST_URL and WATCHDOG_INGEST_TOKEN set, ships the "
+        "proxy's log to Watchdog.",
+    )
+    tools.set_defaults(func=_tools)
+
+    setup = sub.add_parser("mcp-setup", help="print the Devin MCP config and Knowledge note")
+    setup.add_argument("public_url", help="WATCHDOG_PUBLIC_URL: where Devin's machines reach you")
+    setup.add_argument(
+        "--repo",
+        default="https://github.com/silicondaydream/flight-recorder",
+        help="to pip install",
+    )
+    setup.set_defaults(func=_mcp_setup)
 
     replay = sub.add_parser("replay", help="run the rules over recorded logs; act on nothing")
     replay.add_argument("path", help="a log file or a directory of logs")

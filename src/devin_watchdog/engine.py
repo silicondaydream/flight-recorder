@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from devin_watchdog.actions import DevinActions, Teams
+from devin_watchdog.approvals import Signer
 from devin_watchdog.judge import Judge, Verdict
 from devin_watchdog.observe import NUDGE_MARK, Entry, SessionView
 from devin_watchdog.rules import RUNGS, Finding, Thresholds, evaluate
@@ -62,6 +63,7 @@ class Ladder:
     pending: bool = False  # terminate waits on approval
     approved_at: float = 0.0
     approved_by: str = ""
+    declined_by: str = ""  # someone chose "keep running": no terminate this incident
 
 
 class State:
@@ -74,28 +76,34 @@ class State:
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS ladder (session_id TEXT PRIMARY KEY, rung INTEGER, "
             "last_action REAL, last_finding REAL, pending INTEGER, approved_at REAL, "
-            "approved_by TEXT)"
+            "approved_by TEXT, declined_by TEXT)"
         )
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(ladder)")}
+        if "declined_by" not in columns:  # a database from before declining existed
+            self._db.execute("ALTER TABLE ladder ADD COLUMN declined_by TEXT")
         self._db.commit()
 
     def get(self, session_id: str) -> Ladder:
         with self._lock:
             row = self._db.execute(
-                "SELECT rung, last_action, last_finding, pending, approved_at, approved_by "
-                "FROM ladder WHERE session_id = ?",
+                "SELECT rung, last_action, last_finding, pending, approved_at, approved_by, "
+                "declined_by FROM ladder WHERE session_id = ?",
                 (session_id,),
             ).fetchone()
         if row is None:
             return Ladder()
-        return Ladder(row[0], row[1], row[2], bool(row[3]), row[4], row[5] or "")
+        return Ladder(row[0], row[1], row[2], bool(row[3]), row[4], row[5] or "", row[6] or "")
 
     def put(self, session_id: str, ladder: Ladder) -> None:
         with self._lock:
             self._db.execute(
-                "INSERT INTO ladder VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE "
+                "INSERT INTO ladder (session_id, rung, last_action, last_finding, pending, "
+                "approved_at, approved_by, declined_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE "
                 "SET rung = excluded.rung, last_action = excluded.last_action, "
                 "last_finding = excluded.last_finding, pending = excluded.pending, "
-                "approved_at = excluded.approved_at, approved_by = excluded.approved_by",
+                "approved_at = excluded.approved_at, approved_by = excluded.approved_by, "
+                "declined_by = excluded.declined_by",
                 (
                     session_id,
                     ladder.rung,
@@ -104,6 +112,7 @@ class State:
                     int(ladder.pending),
                     ladder.approved_at,
                     ladder.approved_by,
+                    ladder.declined_by,
                 ),
             )
             self._db.commit()
@@ -123,6 +132,7 @@ class Event:
     rules: list[str] = field(default_factory=list)
     dry_run: bool = False
     ok: bool = True
+    links: dict[str, str] = field(default_factory=dict)  # e.g. the approval links sent
 
 
 class Watchdog:
@@ -135,6 +145,7 @@ class Watchdog:
         teams: Teams | None = None,
         judge: Judge | None = None,
         record_dir: Path | None = None,
+        signer: Signer | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.settings = settings
@@ -143,7 +154,9 @@ class Watchdog:
         self.teams = teams
         self.judge = judge
         self.record_dir = record_dir
+        self.signer = signer
         self.clock = clock
+        self.aliases: dict[str, str] = {}  # MCP session -> the Devin session it linked to
         self.views: dict[str, SessionView] = {}
         self.findings: dict[str, list[Finding]] = {}
         self.held: dict[str, str] = {}  # why the last step was not taken
@@ -162,7 +175,27 @@ class Watchdog:
         if not sid:
             return
         with self.lock:
-            self.views.setdefault(sid, SessionView(sid)).add(entry)
+            target = self.aliases.get(sid, sid)
+            view = self.views.setdefault(target, SessionView(target))
+            view.add(entry)
+            if target == sid and view.link and view.link != sid:
+                self._link(sid, view.link)
+
+    def _link(self, mcp_sid: str, devin_sid: str) -> None:
+        """An MCP log said which Devin session it belongs to: fold it in.
+
+        From here on its tool calls count as that session's, exactly, and the
+        ladder acts on the Devin session. Until the importer has seen that
+        session, its view is not a Devin one, so it gets alerts only.
+        """
+        mcp_view = self.views.pop(mcp_sid)
+        self.findings.pop(mcp_sid, None)
+        self.held.pop(mcp_sid, None)
+        self.aliases[mcp_sid] = devin_sid
+        self.views.setdefault(devin_sid, SessionView(devin_sid)).absorb(mcp_view)
+        now = self.clock()
+        self._event(Event(now, devin_sid, "linked", detail=f"MCP log {mcp_sid} linked"))
+        self._record(devin_sid, "watchdog.linked", "success", {"mcp_session": mcp_sid})
 
     def chain_broken(self, reason: str) -> None:
         with self.lock:
@@ -239,15 +272,36 @@ class Watchdog:
             )
             return
 
+        if step == TERMINATE and ladder.declined_by:
+            return self._hold(
+                sid,
+                f"terminate declined by {ladder.declined_by}; holding until it recovers",
+                now,
+                rules,
+            )
         if step == TERMINATE:
             ladder.pending = True
             self.state.put(sid, ladder)
-            self._event(Event(now, sid, "approval", "terminate", "approval requested", rules))
+            links = self._approval_links(sid, now)
+            self._event(
+                Event(now, sid, "approval", "terminate", "approval requested", rules, links=links)
+            )
             self._record(sid, "watchdog.approval_requested", None, {"rules": rules})
             self._safe_alert(
                 f"Approve terminating {view.title or sid}?",
-                {"session": sid, "rules": ", ".join(rules), "approve": f"watchdog approve {sid}"},
+                {
+                    "session": sid,
+                    "rules": ", ".join(rules),
+                    "acus": f"{view.acus_now:.1f}",
+                    "or run": f"watchdog approve {sid}",
+                },
                 link=view.url,
+                actions=[
+                    ("Approve terminate", links["approve"]),
+                    ("Keep running", links["decline"]),
+                ]
+                if links
+                else [],
             )
             return
         self._act(sid, view, ladder, step, findings, verdict, now)
@@ -381,9 +435,38 @@ class Watchdog:
             self._record(sid, "watchdog.approved", "success", {"by": by})
             return True
 
-    def _safe_alert(self, title: str, facts: dict[str, str], *, link: str = "") -> None:
+    def decline(self, sid: str, by: str) -> bool:
+        """A person says keep it running: no terminate until the session recovers."""
+        with self.lock:
+            ladder = self.state.get(sid)
+            if not ladder.pending:
+                return False
+            ladder.pending, ladder.approved_at, ladder.declined_by = False, 0.0, by
+            ladder.last_action = self.clock()
+            self.state.put(sid, ladder)
+            self._event(Event(self.clock(), sid, "approval", "terminate", f"declined by {by}"))
+            self._record(sid, "watchdog.declined", "success", {"by": by})
+            return True
+
+    def pending(self, sid: str) -> bool:
+        return self.state.get(sid).pending
+
+    def _approval_links(self, sid: str, now: float) -> dict[str, str]:
+        if self.signer is None:
+            return {}
+        expires = int(now + self.settings.approval_ttl)
+        return {d: self.signer.link(d, sid, expires) for d in ("approve", "decline")}
+
+    def _safe_alert(
+        self,
+        title: str,
+        facts: dict[str, str],
+        *,
+        link: str = "",
+        actions: list[tuple[str, str]] | None = None,
+    ) -> None:
         try:
-            self._alert(title, facts, link=link)
+            self._alert(title, facts, link=link, actions=actions)
         except DevinError as exc:
             self._event(
                 Event(self.clock(), facts.get("session", "-"), "error", detail=str(exc), ok=False)
@@ -394,10 +477,17 @@ class Watchdog:
             raise DevinError("no Devin client: set DEVIN_API_KEY")
         return self.devin
 
-    def _alert(self, title: str, facts: dict[str, str], *, link: str = "") -> str:
+    def _alert(
+        self,
+        title: str,
+        facts: dict[str, str],
+        *,
+        link: str = "",
+        actions: list[tuple[str, str]] | None = None,
+    ) -> str:
         if self.teams is None:
             return "alert logged (no Teams webhook configured)"
-        self.teams.post(title, facts, link=link)
+        self.teams.post(title, facts, link=link, actions=actions)
         return "alert posted to Teams"
 
     # -- the record ------------------------------------------------------------
@@ -453,6 +543,8 @@ class Watchdog:
                         "rung": ladder.rung,
                         "rung_name": RUNGS[ladder.rung] if ladder.rung >= 0 else "watching",
                         "pending_approval": ladder.pending,
+                        "declined_by": ladder.declined_by,
+                        "mcp_sources": view.sources,
                         "held": self.held.get(sid, ""),
                         "off": self.settings.off_tag in view.tags,
                         "waiting_on_human": view.waiting_on_human,

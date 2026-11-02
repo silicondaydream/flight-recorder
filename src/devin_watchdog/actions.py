@@ -43,7 +43,16 @@ class Teams:
         self.url = webhook_url
         self._http = httpx.Client(transport=transport, timeout=15.0)
 
-    def post(self, title: str, facts: dict[str, str], text: str = "", link: str = "") -> None:
+    def post(
+        self,
+        title: str,
+        facts: dict[str, str],
+        text: str = "",
+        link: str = "",
+        actions: list[tuple[str, str]] | None = None,
+    ) -> None:
+        """One Adaptive Card. `actions` are (title, url) buttons; a webhook card can
+        only open links, so approval buttons are signed links (see approvals.py)."""
         body: list[dict[str, Any]] = [
             {
                 "type": "TextBlock",
@@ -65,8 +74,11 @@ class Teams:
             "version": "1.4",
             "body": body,
         }
+        buttons = [(t, u) for t, u in actions or []]
         if link:
-            card["actions"] = [{"type": "Action.OpenUrl", "title": "Open session", "url": link}]
+            buttons.append(("Open session", link))
+        if buttons:
+            card["actions"] = [{"type": "Action.OpenUrl", "title": t, "url": u} for t, u in buttons]
         payload = {
             "type": "message",
             "attachments": [

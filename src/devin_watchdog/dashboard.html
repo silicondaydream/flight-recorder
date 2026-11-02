@@ -112,7 +112,11 @@ main { padding: 20px 24px 40px; max-width: 1500px; margin: 0 auto; }
 .ev .mark.r1 { background: var(--warning); } .ev .mark.r2 { background: var(--serious); }
 .ev .mark.r3 { background: var(--sleep); } .ev .mark.r4 { background: var(--critical); }
 .ev .mark.held { background: transparent; box-shadow: inset 0 0 0 2px var(--axis); }
-.ev .mark.recovered, .ev .mark.judged { background: var(--good); }
+.ev .mark.recovered, .ev .mark.judged, .ev .mark.linked { background: var(--good); }
+.ev .links { margin-top: 2px; } .ev .links a { color: var(--accent); }
+.decide { display: flex; gap: 8px; flex-wrap: wrap; }
+.exact { margin-left: 8px; font-family: var(--font); font-size: 11px; font-weight: 600; color: var(--good-text); }
+.exact::before { content: "● "; }
 .ev .head { font-weight: 600; } .ev .when { color: var(--muted); font-weight: 400; margin-left: 6px; }
 .ev .detail { color: var(--ink-2); overflow-wrap: anywhere; }
 .ev.failed .head { color: var(--critical); }
@@ -225,14 +229,15 @@ function sparkline(s) {
   const since = s.minutes_since_progress == null ? "" : `${s.acus_since_progress} since progress · ${s.minutes_since_progress}m`;
   return h("div", { class: "spark" }, svg, h("div", { class: "num" }, h("b", {}, s.acus.toFixed(1)), " ACUs", h("div", {}, since)));
 }
-async function approve(id) {
+async function decide(id, what) {
+  const send = token => fetch(`api/${what}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id: id, token }) });
   let token = "";
   try { token = sessionStorage.getItem("wd-token") || ""; } catch (_) {}
-  const r = await fetch("api/approve", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id: id, token }) });
+  const r = await send(token);
   if (r.status === 403) {
     token = prompt("Approval token (WATCHDOG_APPROVAL_TOKEN):") || "";
     try { sessionStorage.setItem("wd-token", token); } catch (_) {}
-    await fetch("api/approve", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id: id, token }) });
+    await send(token);
   }
   refresh();
 }
@@ -242,15 +247,18 @@ function card(s, rungs) {
   const title = s.url ? h("a", { href: s.url, target: "_blank", rel: "noopener" }, s.title) : s.title;
   return h("article", { class: cls },
     h("div", { class: "top" },
-      h("div", {}, h("div", { class: "title" }, title), h("div", { class: "sid" }, s.id, s.off ? " · watchdog:off" : "")),
+      h("div", {}, h("div", { class: "title" }, title), h("div", { class: "sid" }, s.id, s.off ? " · watchdog:off" : "",
+        s.mcp_sources.length ? h("span", { class: "exact", title: s.mcp_sources.join(", ") }, "MCP · exact") : null)),
       statusPill(s)),
     s.task && s.task !== s.title ? h("div", { class: "task" }, `Task: ${s.task}`) : null,
     ladder(s, rungs),
     s.findings.length ? h("div", { class: "findings" }, s.findings.map(f =>
       h("div", { class: "finding" }, h("span", { class: `rule ${f.severity}` }, RULE_LABEL[f.rule] || f.rule),
-        h("span", {}, f.summary, f.heuristic ? h("span", { class: "guess" }, " · read from messages") : null)))) : null,
+        h("span", {}, f.summary, f.heuristic ? h("span", { class: "guess" }, " · read from messages") : h("span", { class: "guess" }, " · exact"))))) : null,
     s.held ? h("div", { class: "held" }, s.held) : null,
-    s.pending_approval ? h("div", {}, h("button", { class: "danger", type: "button", onclick: () => approve(s.id) }, "Approve terminate")) : null,
+    s.pending_approval ? h("div", { class: "decide" },
+      h("button", { class: "danger", type: "button", onclick: () => decide(s.id, "approve") }, "Approve terminate"),
+      h("button", { type: "button", onclick: () => decide(s.id, "decline") }, "Keep running")) : null,
     sparkline(s),
     s.recent.length ? h("div", { class: "recent" }, s.recent.slice(-2).map(m =>
       h("div", { class: "msg" }, h("span", { class: "who" }, m.from === "devin" ? "Devin" : m.from === "watchdog" ? "Watchdog" : "User"), m.text))) : null);
@@ -259,11 +267,15 @@ function feedItem(e) {
   const idx = ["log", "alert", "nudge", "sleep", "terminate"].indexOf(e.rung);
   const mark = e.kind === "action" ? `r${idx}` : e.kind;
   const head = e.kind === "action" ? `${RUNG_LABEL[e.rung]}${e.dry_run && (e.rung === "nudge" || e.rung === "sleep") ? " (dry run)" : ""}`
-    : e.kind === "held" ? "Held back" : e.kind === "judged" ? "Judge: not stuck" : e.kind === "approval" ? "Approval" : e.kind === "recovered" ? "Recovered" : "Error";
+    : e.kind === "held" ? "Held back" : e.kind === "judged" ? "Judge: not stuck" : e.kind === "approval" ? "Approval"
+    : e.kind === "recovered" ? "Recovered" : e.kind === "linked" ? "MCP log linked" : "Error";
   return h("div", { class: `ev${e.ok ? "" : " failed"}` }, h("span", { class: `mark ${mark}` }),
     h("div", {}, h("div", { class: "head" }, head, h("span", { class: "when" }, `${e.session_id} · ${ago(e.ago)}`)),
       h("div", { class: "detail" }, e.detail),
-      e.rules.length ? h("div", { class: "detail" }, e.rules.map(r => RULE_LABEL[r] || r).join(", ")) : null));
+      e.rules.length ? h("div", { class: "detail" }, e.rules.map(r => RULE_LABEL[r] || r).join(", ")) : null,
+      e.links && e.links.approve ? h("div", { class: "links" }, "Teams buttons: ",
+        h("a", { href: e.links.approve, target: "_blank", rel: "noopener noreferrer" }, "Approve terminate"), " · ",
+        h("a", { href: e.links.decline, target: "_blank", rel: "noopener noreferrer" }, "Keep running")) : null));
 }
 function render(st) {
   const mode = document.getElementById("mode");

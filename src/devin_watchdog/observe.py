@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from devin_watchdog.tools import LINK_TOOL, devin_session_id
+
 Entry = dict[str, Any]
 
 WINDOW = 500  # observations kept per session
@@ -262,15 +264,24 @@ def _text_of(value: Any) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
-        if isinstance(value.get("message"), str):
-            return str(value["message"])
-        return " ".join(_text_of(v) for v in value.get("content", []) if isinstance(v, dict | str))
+        for key in ("message", "text"):  # a JSON-RPC error / an MCP text block
+            if isinstance(value.get(key), str):
+                return str(value[key])
+        return "\n".join(_text_of(v) for v in value.get("content", []) if isinstance(v, dict | str))
     return ""
 
 
 _EDIT_TOOL = re.compile(r"(?i)(edit|write|patch|replace|create_file|str_replace|apply_diff)")
+_FILE_TOOL = re.compile(r"(?i)(edit|write|patch|replace|create_file|apply_diff|read|view|list_dir)")
+_EXCEPTION = re.compile(r"(?:[A-Z][A-Za-z]*)?(?:Error|Exception)\b")
+_EXIT_LINE = re.compile(r"(?i)^\s*exit (?:code|status) \d+\s*$")
 _SHELL_ARGS = ("command", "cmd", "script", "shell")
 _PATH_ARGS = ("path", "file", "file_path", "filename", "target_file")
+
+
+def _request(entry: Entry, flight: dict[str, Any]) -> str:
+    """A tool call's key: request ids repeat across MCP sessions merged into one view."""
+    return f"{entry.get('session', {}).get('id')}:{flight.get('request_id')}"
 
 
 @dataclass
@@ -301,7 +312,9 @@ class SessionView:
     last_seen: float = 0.0
     observations: deque[Obs] = field(default_factory=lambda: deque(maxlen=WINDOW))
     pending: dict[str, tuple[str, str]] = field(default_factory=dict)  # MCP request -> call
+    sources: list[str] = field(default_factory=list)  # MCP sessions linked into this view
     changed: bool = True
+    link: str = ""  # an MCP log: the Devin session it said it belongs to
 
     @property
     def is_devin(self) -> bool:
@@ -327,6 +340,20 @@ class SessionView:
     def messages(self, since: float = 0.0) -> list[Obs]:
         return [o for o in self.recent("message", since) if o.source == "devin"]
 
+    def absorb(self, other: SessionView) -> None:
+        """Take in a linked MCP session's view: its observations become this session's."""
+        merged = sorted([*self.observations, *other.observations], key=lambda o: o.at)
+        self.observations = deque(merged, maxlen=WINDOW)
+        self.pending.update(other.pending)
+        self.sources.append(other.session_id)
+        self.first_seen = (
+            min(t for t in (self.first_seen, other.first_seen) if t)
+            if (self.first_seen or other.first_seen)
+            else 0.0
+        )
+        self.last_seen = max(self.last_seen, other.last_seen)
+        self.changed = True
+
     def progress(self, at: float, why: str) -> None:
         self.last_progress = max(self.last_progress, at)
         self.acus_at_progress = self.acus_now
@@ -338,7 +365,9 @@ class SessionView:
         at = epoch(entry)
         self.first_seen = self.first_seen or at
         self.last_seen = max(self.last_seen, at)
-        self.agent = self.agent or str(entry.get("agent", {}).get("name", ""))
+        agent = str(entry.get("agent", {}).get("name", ""))
+        # A linked MCP log can arrive before the importer's entries: Devin's win.
+        self.agent = "devin" if agent == "devin" else (self.agent or agent)
         self.changed = True
         action = entry.get("event", {}).get("action")
         flight = entry.get("flight") or {}
@@ -416,25 +445,47 @@ class SessionView:
         tool = str(flight.get("tool", ""))
         args = kept_value(flight.get("arguments"))
         args = args if isinstance(args, dict) else {}
+        if tool == LINK_TOOL:
+            # Devin saying which session this MCP log belongs to (see tools.py).
+            self.link = devin_session_id(str(args.get("session", ""))) or self.link
+            self.pending[_request(entry, flight)] = (tool, "")
+            return
         command = next((str(args[k]) for k in _SHELL_ARGS if k in args), "")
         path = next((str(args[k]) for k in _PATH_ARGS if k in args), "")
         if _EDIT_TOOL.search(tool) and path:
             self.observations.append(Obs("edit", at, path, source="mcp"))
-        label = command or f"{tool} {' '.join(f'{k}={v}' for k, v in sorted(args.items()))}"
-        self.pending[str(flight.get("request_id"))] = (tool, label)
+        if command:
+            label = command
+        elif _FILE_TOOL.search(tool):
+            label = ""  # reads and edits are not commands; their failures are errors
+        else:
+            label = f"{tool} {' '.join(f'{k}={v}' for k, v in sorted(args.items()))}"[:200]
+        self.pending[_request(entry, flight)] = (tool, label)
 
     def _tool_result(self, at: float, entry: Entry, flight: dict[str, Any]) -> None:
-        tool, label = self.pending.pop(str(flight.get("request_id")), (str(flight.get("tool")), ""))
+        tool, label = self.pending.pop(
+            _request(entry, flight), (str(flight.get("tool")), str(flight.get("tool")))
+        )
+        if tool == LINK_TOOL:
+            return
         outcome = entry.get("event", {}).get("outcome")
-        self.observations.append(Obs("command", at, label or tool, outcome, "mcp"))
+        if label:
+            self.observations.append(Obs("command", at, label, outcome, "mcp"))
         if outcome == "failure":
             text = _text_of(kept_value(flight.get("result"))) or tool
-            first = next((line for line in text.splitlines() if line.strip()), text)
-            self.observations.append(Obs("error", at, error_signature(first), source="mcp"))
-            for blocker in read_message(text).blockers:
+            seen = read_message(text)
+            if seen.errors:
+                # One error per result, the most specific: an exception over a summary line.
+                errors = tuple(sorted(seen.errors, key=lambda e: not _EXCEPTION.match(e))[:1])
+            else:  # no recognisable error line: the first line that says something
+                lines = [ln for ln in text.splitlines() if ln.strip()]
+                errors = tuple(ln for ln in lines if not _EXIT_LINE.match(ln))[:1] or (text,)
+            for error in errors:
+                self.observations.append(Obs("error", at, error_signature(error), source="mcp"))
+            for blocker in seen.blockers:
                 self.observations.append(Obs("blocker", at, blocker, source="mcp"))
-        elif outcome == "success" and TEST_OR_BUILD.search(label):
-            self.progress(at, f"{label} passed")
+        elif outcome == "success" and label and TEST_OR_BUILD.search(label):
+            self.progress(at, f"`{label}` passed")
 
     def _shell_command(self, at: float, entry: Entry, flight: dict[str, Any]) -> None:
         command = str(kept_value(flight.get("command")) or "")

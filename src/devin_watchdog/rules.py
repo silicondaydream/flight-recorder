@@ -116,11 +116,12 @@ def edit_thrash(view: SessionView, now: float, t: Thresholds) -> Finding | None:
     path, count = counts.most_common(1)[0]
     if count < t.edit_repeats:
         return None
+    shown = "/".join(path.rstrip("/").split("/")[-3:])  # the tail of a long absolute path
     return Finding(
         "edit_thrash",
-        f"{path} edited {count} times without progress",
+        f"{shown} edited {count} times without progress",
         (path,),
-        nudge=f"You have edited {path} {count} times without the change sticking. "
+        nudge=f"You have edited {shown} {count} times without the change sticking. "
         "Revert to the last known-good version and write down the intended change "
         "before editing again.",
         heuristic=_guessed([o for o in edits if o.value == path]),
