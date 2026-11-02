@@ -1,10 +1,13 @@
-# docker compose up          → watches your org, DRY RUN, dashboard on localhost:8765
+# docker compose up          → watches your org, DRY RUN, dashboard on localhost:8765,
+#                              public listener (ingest + approval links) on :8766
 # docker compose run --rm --service-ports demo   → the scripted demo, no keys needed
 services:
   watchdog:
     build: .
     restart: unless-stopped
-    ports: ["127.0.0.1:8765:8765"]
+    # The dashboard shows session content: loopback only. The public listener is
+    # what Devin's machines and approvers' browsers reach, through your HTTPS proxy.
+    ports: ["127.0.0.1:8765:8765", "8766:8766"]
     volumes: ["watchdog-data:/data"]
     environment:
       DEVIN_API_KEY: ${DEVIN_API_KEY:?set a Devin service-user key (cog_...)}
@@ -12,13 +15,15 @@ services:
       TEAMS_WEBHOOK_URL: ${TEAMS_WEBHOOK_URL:-}
       WATCHDOG_DRY_RUN: ${WATCHDOG_DRY_RUN:-1}
       WATCHDOG_JUDGE_MODEL: ${WATCHDOG_JUDGE_MODEL:-}
-      WATCHDOG_APPROVAL_TOKEN: ${WATCHDOG_APPROVAL_TOKEN:?set a token for approving terminates}
+      WATCHDOG_APPROVAL_TOKEN: ${WATCHDOG_APPROVAL_TOKEN:?set a secret for signing approval links}
+      WATCHDOG_PUBLIC_URL: ${WATCHDOG_PUBLIC_URL:-}
+      WATCHDOG_INGEST_TOKEN: ${WATCHDOG_INGEST_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
 
   demo:
     build: .
     profiles: [demo]
-    ports: ["127.0.0.1:8765:8765"]
+    ports: ["127.0.0.1:8765:8765", "127.0.0.1:8766:8766"]
     command: ["demo", "--host", "0.0.0.0", "--dir", "/data/demo"]
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

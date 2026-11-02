@@ -1,6 +1,6 @@
 # REMAINING TASKS
 
-Updated 2026-10-29 (devin branch). Everything in section 1 was run.
+Updated 2026-11-02 (devin branch). Everything in section 1 was run.
 
 ## 1. Where things stand — verified
 
@@ -20,6 +20,12 @@ Also checked by hand:
   Dashboard checked at 1500px (light and dark) and 390px.
 - `watchdog run --no-import` against the demo's logs; a non-editable install
   ships `dashboard.html`.
+- The demo's MCP session: a real `flight-recorder proxy` + `watchdog tools`
+  really runs `python3 -m unittest`. Its log ships over `/api/ingest`, links via
+  `link_session`, and verifies on both sides with the same head. It goes up the
+  ladder to an approval request, and the signed "Approve terminate" link,
+  opened and confirmed as a browser would, terminated it. A tampered signature
+  gets 403.
 
 **The Devin importer now targets the v3 API**, from Devin's published OpenAPI
 spec (`docs.devin.ai/v3-openapi.json`, read 2026-10-29). v1 is deprecated.
@@ -38,8 +44,12 @@ confirm against the real API:
 **Not checked yet: Docker.** There was no Docker daemon in the build sandbox.
 `docker compose run --rm --service-ports demo` is the first thing to try.
 
-**Not checked yet: a real MCP server through the proxy.** Same as before; try
-`@modelcontextprotocol/server-everything` in a real client.
+**Not checked yet: `watchdog tools` inside a real Devin session.** Things to
+confirm: Devin starts the STDIO server with `flight-recorder` on its PATH (after
+the blueprint's pip install), it follows the Knowledge note (calls
+`link_session`, uses `run_command`), and its machine can reach
+`WATCHDOG_INGEST_URL`. Also not checked: a real Teams webhook rendering the
+card's buttons.
 
 ## Branches
 
@@ -62,6 +72,11 @@ config, and the demo script. Layout:
 - `judge.py` is the optional Claude judge. It can veto a step, never add one.
 - `actions.py` has the Devin write calls (message, archive, tags, delete) and
   the Teams card.
+- `tools.py` is `watchdog tools`: the MCP server Devin runs behind the proxy,
+  plus the `Shipper` that posts its log to `/api/ingest`.
+- `ingest.py` is the receiving end. It appends only entries that chain on.
+- `approvals.py` signs and checks the approval links; `public.py` is the public
+  listener (ingest and approval pages). The dashboard stays on loopback.
 - `runner.py` wires importer, feed and engine threads; `cli.py` is
   `watchdog run|demo|approve|replay`.
 - `fakedevin.py` is the v3 fake used by the tests and the demo; `demo.py` is
@@ -74,14 +89,11 @@ what it acted on is always in the chain.
 
 0. **(devin) Run against a real org**, as above. Then tune `Thresholds` with
    `watchdog replay` over a week of real sessions before `--live`.
-1. **(devin) Commands for the heuristic rules.** The v3 API has no commands or
-   edits. Options: give Devin shell/editor MCP servers through the proxy (exact
-   events, and the rules already read `tool.call`/`tool.result`); or check
-   whether Devin adds a session events/timeline endpoint (`insights.timeline`
-   exists but is post-hoc).
-2. **(devin) Teams approval button.** The approval card links to the session;
-   an `Action.Http`/Workflows callback to `/api/approve` would make approval one
-   click from Teams.
+1. **(devin) Try `watchdog tools` in a real Devin session**, as above. If Devin
+   ignores the Knowledge note, try a playbook that requires it.
+2. **(devin) Approver identity.** A signed link proves the link, not the person.
+   For named approvals, use a Power Automate "post card and wait for a
+   response" flow, or a Teams bot (`Action.Execute`) calling `watchdog approve`.
 3. **Streamable HTTP MCP proxy.** Only stdio servers today. Many hosted servers
    are HTTP.
 4. **Anchoring.** `verify --head` prints the head hash; nothing stores it. A

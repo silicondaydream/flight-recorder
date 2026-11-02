@@ -58,7 +58,11 @@ mapping.
 | `session.status` | Devin import | `status`, `status_detail`, `previous_status`, `previous_status_detail` |
 | `message` | Devin import | `from` (`devin`/`user`), `origin`, `username`, `event_id`, `text` |
 | `watchdog.log` / `.alert` / `.nudge` / `.sleep` / `.terminate` | Watchdog | `rung`, `dry_run`, `detail`, `findings`, `verdict`, `acus_consumed` |
-| `watchdog.held` / `.judged` / `.approval_requested` / `.approved` / `.recovered` | Watchdog | why it held back, the judge's verdict, who approved |
+| `watchdog.held` / `.judged` / `.approval_requested` / `.approved` / `.declined` / `.recovered` | Watchdog | why it held back, the judge's verdict, who approved or declined |
+| `watchdog.linked` | Watchdog | `mcp_session`: an MCP log that `link_session` tied to this Devin session |
+
+MCP logs shipped from Devin's session machines are stored as `mcp-<proxy session>.ndjson`,
+entry for entry as the proxy wrote them, so they verify with the same head hash.
 
 ## Kept payloads
 

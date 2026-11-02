@@ -18,6 +18,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `watchdog replay` for tuning against recorded sessions, `watchdog demo`
   against a scripted fake of the v3 API, and a Dockerfile and compose file.
 
+- **Exact commands through MCP.** `watchdog tools`: a shell and editor MCP
+  server for Devin (`run_command` with real exit codes, `edit_file`,
+  `write_file`, `read_file`, `link_session`), run behind `flight-recorder proxy`.
+  It ships the proxy's log from the session machine to Watchdog's new public
+  listener (`POST /api/ingest`), which appends only entries that chain on.
+  `link_session` ties the log to its Devin session, and its findings are then
+  exact. `watchdog mcp-setup` prints the Devin config and Knowledge note.
+- **Approving from Teams.** The approval card has signed, expiring **Approve
+  terminate** and **Keep running** links. They open a confirmation page on the
+  public listener, and only that page's POST acts. There is also `watchdog
+  decline`, a "Keep running" button on the dashboard, and `watchdog run --public`.
+- The demo adds a session driven through a real proxy and `watchdog tools`,
+  which ends in the Teams approval flow.
+
+### Fixed (devin branch)
+
+- Errors from MCP tool results were reduced to the tool's name; the error line
+  in the result's text is used now.
+
 ### Changed (devin branch)
 
 - **The Devin importer uses the v3 organization API** (`/v3/organizations/{org_id}/…`,

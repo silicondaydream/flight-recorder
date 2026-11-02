@@ -11,7 +11,8 @@ USER watchdog
 # Logs, importer state and Watchdog's state all live on the volume.
 ENV XDG_DATA_HOME=/data XDG_STATE_HOME=/data/state WATCHDOG_DRY_RUN=1
 VOLUME /data
-EXPOSE 8765
+# 8765: the dashboard (publish on loopback only). 8766: the public listener, for
+# MCP log ingest and Teams approval links (put HTTPS in front of it).
+EXPOSE 8765 8766
 ENTRYPOINT ["watchdog"]
-# 0.0.0.0 so the port can be published; set WATCHDOG_APPROVAL_TOKEN when you do.
-CMD ["run", "--dashboard", "0.0.0.0:8765"]
+CMD ["run", "--dashboard", "0.0.0.0:8765", "--public", "0.0.0.0:8766"]
