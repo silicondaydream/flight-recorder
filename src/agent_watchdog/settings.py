@@ -293,6 +293,15 @@ FIELDS: tuple[Field, ...] = (
         "Ask a person to approve terminating. Off: Watchdog stops at the step before.",
     ),
     Field(
+        "ladder.nudge_channel",
+        "choice",
+        "message",
+        "Deliver nudges",
+        "As a chat message, or as a note the agent reads on its next tool call "
+        "(needs Watchdog's Devin hooks; falls back to a message for sessions without them).",
+        choices=(("message", "Chat message"), ("hook", "Note via hooks"), ("both", "Both")),
+    ),
+    Field(
         "ladder.waiting_on_human",
         "choice",
         "alert",

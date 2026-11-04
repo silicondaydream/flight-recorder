@@ -219,6 +219,29 @@ def _activity(entry: Entry, sid: str) -> Activity | None:
         detail = data.get("status_detail")
         text = f"Status: {data.get('status')}" + (f" · {detail}" if detail else "")
         return Activity(at, sid, "status", text, NOTABLE, sequence=seq, source=source)
+    if action == "hook.post_tool":
+        args = kept_value(data.get("arguments"))
+        args = args if isinstance(args, dict) else {}
+        what = args.get("command") or args.get("path") or args.get("file_path") or ""
+        failed = event.get("outcome") == "failure"
+        code = data.get("exit_code")
+        verdict = ("failed" if failed else "ok") + (f" (exit {code})" if code is not None else "")
+        text = f"{data.get('tool')}  {str(what)[:300]}  {verdict}".strip()
+        level = NOTABLE if failed else EVERYTHING
+        return Activity(at, sid, "result", text, level, not failed, seq, source)
+    if action == "hook.prompt":
+        text = str(kept_value(data.get("text")) or "")
+        return Activity(
+            at, sid, "message", f"Person: {text}", EVERYTHING, sequence=seq, source=source
+        )
+    if action == "hook.session_start":
+        woke = data.get("hook_source") == "resume"
+        text = "Session woke up (hook)" if woke else "Session started (hook)"
+        return Activity(at, sid, "lifecycle", text, NOTABLE, sequence=seq, source=source)
+    if action == "hook.stop":
+        text = str(kept_value(data.get("text")) or "")
+        text = f"Agent ended its turn: {text}" if text else "Agent ended its turn"
+        return Activity(at, sid, "lifecycle", text, EVERYTHING, sequence=seq, source=source)
     if action in ("session.start", "session.end"):
         text = "MCP session started" if action == "session.start" else "MCP session ended"
         return Activity(at, sid, "lifecycle", text, NOTABLE, sequence=seq, source=source)
@@ -250,7 +273,8 @@ class Watchdog:
         self.clock = clock
         self.info = info or {}  # shown in settings: what is connected (never secrets)
         self.started_at = clock()
-        self.aliases: dict[str, str] = {}  # MCP session -> the Devin session it linked to
+        self.aliases: dict[str, str] = {}  # MCP/hook session -> the Devin session it is
+        self.hook_notes: dict[str, list[str]] = {}  # Devin session -> notes for its next hook
         self.views: dict[str, SessionView] = {}
         self.entries: dict[str, deque[Entry]] = {}  # recent raw entries, for the detail view
         self.findings: dict[str, list[Finding]] = {}
@@ -283,13 +307,15 @@ class Watchdog:
             if target == sid and view.link and view.link != sid:
                 self._link(sid, view.link)
 
-    def _link(self, mcp_sid: str, devin_sid: str) -> None:
-        """An MCP log said which Devin session it belongs to: fold it in.
+    def _link(self, mcp_sid: str, devin_sid: str, how: str = "") -> None:
+        """An MCP or hook log belongs to a Devin session: fold it in.
 
         From here on its tool calls count as that session's, exactly, and the
         ladder acts on the Devin session. Until the importer has seen that
         session, its view is not a Devin one, so it gets alerts only.
         """
+        kind = "Hook events" if self.views[mcp_sid].is_hook else "MCP log"
+        how = how or ("the session id they carry" if kind == "Hook events" else "link_session")
         mcp_view = self.views.pop(mcp_sid)
         self.findings.pop(mcp_sid, None)
         self.held.pop(mcp_sid, None)
@@ -304,8 +330,53 @@ class Watchdog:
             if item.session_id == mcp_sid:
                 item.session_id = devin_sid
         now = self.clock()
-        self._event(Event(now, devin_sid, "linked", detail=f"MCP log {mcp_sid} linked"))
-        self._record(devin_sid, "watchdog.linked", "success", {"mcp_session": mcp_sid})
+        detail = f"{kind} {mcp_sid} linked, by {how}"
+        self._event(Event(now, devin_sid, "linked", detail=detail))
+        self._record(devin_sid, "watchdog.linked", "success", {"mcp_session": mcp_sid, "how": how})
+
+    def _match_hooks(self) -> None:
+        """Link hook sessions that carried no Devin id by their first prompt.
+
+        Devin's hook `session_id` need not be the API's `devin-…` id. A person's
+        message is seen twice, though: by the `UserPromptSubmit` hook and by the
+        API. When exactly one Devin session has the same message, that is the one.
+        """
+
+        def norm(text: str) -> str:
+            return " ".join(text.split()).lower()[:400]
+
+        devin = {
+            sid: {
+                norm(o.value) for o in v.observations if o.kind == "message" and o.source == "user"
+            }
+            | ({norm(v.task)} if v.task else set())
+            for sid, v in self.views.items()
+            if v.is_devin
+        }
+        for sid, view in list(self.views.items()):
+            if not view.is_hook or view.link or not view.prompts:
+                continue
+            asked = {norm(p) for p in view.prompts if p.strip()}
+            matches = [d for d, texts in devin.items() if asked & texts]
+            if len(matches) == 1:
+                view.link = matches[0]
+                self._link(sid, matches[0], "matching its first prompt")
+
+    def queue_hook_note(self, sid: str, text: str) -> None:
+        """A note for the agent, delivered by its next hook (PostToolUse)."""
+        with self.lock:
+            self.hook_notes.setdefault(sid, []).append(text)
+
+    def take_hook_notes(self, hook_sessions: list[str]) -> dict[str, str]:
+        """For `/api/hook`: the notes waiting for these hook sessions' Devin sessions."""
+        out: dict[str, str] = {}
+        with self.lock:
+            for hook_sid in hook_sessions:
+                target = self.aliases.get(hook_sid, hook_sid)
+                notes = self.hook_notes.pop(target, [])
+                if notes:
+                    out[hook_sid] = "\n".join(notes)
+        return out
 
     def chain_broken(self, reason: str) -> None:
         with self.lock:
@@ -326,6 +397,7 @@ class Watchdog:
             self.notifier.flush()
             if self.broken:
                 return
+            self._match_hooks()
             for sid, view in list(self.views.items()):
                 if view.is_devin:
                     self._lifecycle(sid, view, now)
@@ -575,9 +647,19 @@ class Watchdog:
         detail, ok = worst.summary, True
         try:
             if step == NUDGE:
-                detail = f"sent: {message}"
-                if not dry:
-                    self._devin().nudge(sid, message)
+                channel = str(self.config.get("ladder.nudge_channel"))
+                by_hook = channel in ("hook", "both") and bool(view.hooked)
+                by_message = channel in ("message", "both") or not by_hook
+                parts = []
+                if by_hook:
+                    parts.append("into the agent's context on its next tool call")
+                    if not dry:
+                        self.queue_hook_note(sid, message)
+                if by_message:
+                    parts.append("as a chat message")
+                    if not dry:
+                        self._devin().nudge(sid, message)
+                detail = f"sent ({' and '.join(parts)}): {message}"
             elif step == SLEEP:
                 detail = "archived (asleep) and tagged watchdog:slept"
                 if not dry:
@@ -585,7 +667,7 @@ class Watchdog:
         except DevinError as exc:
             detail, ok = str(exc), False
         if dry and step in (NUDGE, SLEEP):
-            detail = "[dry run] would have " + detail.replace("sent:", "sent")
+            detail = "[dry run] would have " + detail
         if ok:
             ladder.rung, ladder.last_action = step, now
             self.state.put(sid, ladder)
@@ -595,8 +677,6 @@ class Watchdog:
         notice = self._notice(rung if ok else "errors", sid, view, titles[rung], summary, findings)
         notice.dry_run = dry
         event.teams = self.notifier.notify(notice)
-        if step == ALERT:
-            event.detail = f"{worst.summary} (Teams: {event.teams})"
         self._event(event)
         self._record(
             sid,
@@ -703,6 +783,15 @@ class Watchdog:
                         return False, "the session is not running (a message would wake it)"
                     if not dry:
                         self._devin().nudge(sid, f"{NUDGE_MARK} {body}")
+                elif action == "note":
+                    body = text.strip()
+                    if not body:
+                        return False, "the note is empty"
+                    if not view.hooked:
+                        return False, "no hook events from this session yet: send a message instead"
+                    detail = f"queued for the agent's next tool call: {body[:500]}"
+                    if not dry:
+                        self.queue_hook_note(sid, f"{NUDGE_MARK} {body}")
                 elif action == "sleep":
                     detail = "put to sleep"
                     if not dry:
@@ -720,7 +809,7 @@ class Watchdog:
                     return False, f"unknown action {action!r}"
             except DevinError as exc:
                 ok, detail = False, str(exc)
-            if dry and action in ("message", "sleep", "terminate"):
+            if dry and action in ("message", "note", "sleep", "terminate"):
                 detail = "[dry run] would have " + detail.replace("sent:", "sent")
             if ok:
                 ladder.last_action = self.clock()
@@ -883,6 +972,7 @@ class Watchdog:
             "muted": ladder.muted,
             "held": self.held.get(sid, ""),
             "mcp_sources": view.sources,
+            "hook_sources": view.hooked,
             "findings": [f.as_dict() for f in findings],
             "recent": [
                 {"from": o.source, "text": o.value[:chars], "ago": round(now - o.at)}

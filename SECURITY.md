@@ -34,6 +34,9 @@ within the guardrails people set, and to leak nothing that passes through it.
 | Any secret shown in the dashboard | Secrets are environment variables, never settings; the panel shows only "set" or "not set" | `tests/test_settings.py` |
 | Another site changing settings or acting through the dashboard | Loopback by default; changes need JSON (a CORS preflight it never answers) and `WATCHDOG_APPROVAL_TOKEN` when set | `tests/test_watchdog.py`, `tests/test_settings.py` |
 | Forged or replayed approval links | HMAC-SHA256 over decision, session and expiry; a GET only shows a confirmation page | `tests/test_mcp.py` |
+| Secrets in hook events | The hook script redacts with Watchdog's own patterns (a test keeps them identical) before spooling or sending; Watchdog redacts again before writing | `tests/test_hooks.py` |
+| A Watchdog outage stalling Devin | The hook script never blocks a tool, always exits 0, times out after 2 s and backs off for 20 s, spooling events locally | `tests/test_hooks.py` |
+| Forged hook events | `/api/hook` needs the bearer token | `tests/test_hooks.py` |
 | Forged MCP log entries over ingest | A bearer token, and each entry must be the next link of its chain | `tests/test_mcp.py` |
 | A session's text steering the AI judge | Given as data in `<session>`; the judge can only hold Watchdog back | `tests/test_watchdog.py` |
 | A huge payload exhausting disk | Payloads over `--max-payload` are kept as a preview plus size and hash | `tests/test_redact.py`, `tests/test_proxy.py` |

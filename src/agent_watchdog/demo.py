@@ -1,6 +1,6 @@
 """`watchdog demo`: the whole pipeline against a scripted fake of Devin's API.
 
-Five sessions run on a local fake of the v3 API, each showing one behaviour:
+Seven sessions run on a local fake of the v3 API, each showing one behaviour:
 
     checkout   deliberately stuck: the same failing test, the same error, ACUs
                climbing. Watchdog logs it, alerts, nudges, then puts it to sleep.
@@ -13,6 +13,12 @@ Five sessions run on a local fake of the v3 API, each showing one behaviour:
                teammate wakes it, it is still stuck, and Watchdog asks for
                approval to terminate: the Teams card's signed links, shown in
                the decisions feed, open the approval page.
+
+    pricing    seen through Watchdog's Devin hooks: every native shell command
+               and edit, exactly, through the real hook script. Its hook
+               session id is not a Devin id, so Watchdog links it by its first
+               prompt. It is nudged through the hook (the note lands in the
+               agent's context), realises the tests contradict, and asks.
 
 The api session's tool calls really run: a real `watchdog proxy` in
 front of a real `watchdog tools`, in a scratch workspace, shipping its log to
@@ -44,6 +50,11 @@ MIGRATE = "devin-demo-migrate"
 SEARCH = "devin-demo-search"
 README = "devin-demo-readme"
 API_ID = "5f0c1e2a9b7d4c6e8a1f3b2d"  # what Devin would read from its session link
+PRICING = "devin-demo-pricing"
+PRICING_PROMPT = (
+    "Make `python3 -m unittest` pass in this repository. Do not modify anything under "
+    "tests/: those tests encode requirements from our payment partners."
+)
 
 STUCK = [
     "Running `npm test -- checkout.spec.ts`. It failed: Error: Cannot find module "
@@ -113,6 +124,8 @@ class Scenario:
         fake.add(f"devin-{API_ID}", title="Fix the failing API client tests")
         fake.say(f"devin-{API_ID}", "user", "The API client unit tests started failing; fix them.")
         fake.say(f"devin-{API_ID}", "devin", "Looking at the API client tests now.")
+        fake.add(PRICING, title="Make the pricing tests pass")
+        fake.say(PRICING, "user", PRICING_PROMPT)
         self._asleep_steps = 0
         self.woken = False
         fake.say(CHECKOUT, "user", "The checkout test fails about half the time on CI. Fix it.")
@@ -150,6 +163,8 @@ class Scenario:
             self._migrate()
             self._readme()
             self._api()
+            if self._running(PRICING):
+                self._spend(PRICING, 0.35)
 
     def _api(self) -> None:
         sid = f"devin-{API_ID}"
@@ -345,6 +360,118 @@ def start_mcp_agent(
         agent.close()
 
     threading.Thread(target=drive, name="mcp-agent", daemon=True).start()
+    return agent
+
+
+HALF_UP_FAIL = """..F.E
+======================================================================
+FAIL: test_half_cents_round_to_even (tests.test_bank_ledger.BankLedgerExportTest)
+AssertionError: Decimal('2.67') != Decimal('2.66')
+----------------------------------------------------------------------
+Ran 5 tests in 0.002s
+
+FAILED (failures=2, errors=1)"""
+HALF_EVEN_FAIL = HALF_UP_FAIL.replace("bank_ledger.BankLedger", "card_processor.CardProcessor")
+HALF_EVEN_FAIL = HALF_EVEN_FAIL.replace("round_to_even", "round_up").replace(
+    "Decimal('2.67') != Decimal('2.66')", "Decimal('2.66') != Decimal('2.67')"
+)
+
+
+class HookAgent:
+    """Plays Devin's own shell and editor, as its hooks report them, through the real
+    hook script (`agent_watchdog.devin_hook`, the same file as the Devin plugin's)."""
+
+    def __init__(self, work: Path, hook_url: str, token: str, fake: FakeDevin) -> None:
+        self.fake = fake
+        self.session = "3f8d1c2a-0b4e-4c55-9a1e-7d2f6c0e9b31"  # not a Devin id
+        self.env = {
+            **os.environ,
+            "WATCHDOG_HOOK_URL": hook_url,
+            "WATCHDOG_INGEST_TOKEN": token,
+            "WATCHDOG_HOOK_DIR": str(work / "hook-spool"),
+        }
+        self.attempt = 0
+        self.asked = False
+
+    def hook(self, event: str, **fields: Any) -> str:
+        payload = {"hook_event_name": event, "session_id": self.session, **fields}
+        done = subprocess.run(
+            [sys.executable, "-m", "agent_watchdog.devin_hook"],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            env=self.env,
+            timeout=30,
+            check=False,
+        )
+        out = done.stdout.strip()
+        if not out:
+            return ""
+        context = json.loads(out).get("hookSpecificOutput", {}).get("additionalContext", "")
+        return str(context)
+
+    def start(self) -> None:
+        self.hook("SessionStart", source="startup")
+        self.hook("UserPromptSubmit", prompt=PRICING_PROMPT, prompt_id="p1")
+
+    def tool(self, name: str, tool_input: dict[str, Any], response: dict[str, Any]) -> str:
+        self.hook("PreToolUse", tool_name=name, tool_input=tool_input, prompt_id="p1")
+        return self.hook(
+            "PostToolUse",
+            tool_name=name,
+            tool_input=tool_input,
+            tool_response=response,
+            prompt_id="p1",
+        )
+
+    def step(self) -> None:
+        session = self.fake.sessions[PRICING]
+        if session["status"] != "running" or session["status_detail"] != "working":
+            return
+        self.attempt += 1
+        half_up = self.attempt % 2 == 1
+        mode = "ROUND_HALF_UP" if half_up else "ROUND_HALF_EVEN"
+        notes = [
+            self.tool(
+                "edit",
+                {"file_path": "pricing/money.py", "old_string": "rounding=", "new_string": mode},
+                {"success": True, "output": "Edited pricing/money.py", "error": None},
+            ),
+            self.tool(
+                "exec",
+                {"command": "python3 -m unittest", "shell_id": "main"},
+                {
+                    "success": False,
+                    "output": HALF_UP_FAIL if half_up else HALF_EVEN_FAIL,
+                    "error": None,
+                },
+            ),
+        ]
+        if any(notes) and not self.asked:
+            # The note arrived in its context: it stops looping, and asks.
+            self.asked = True
+            self.fake.say(
+                PRICING,
+                "devin",
+                "Watchdog points out I am looping. The card-processor tests want half-cents "
+                "rounded up and the bank-ledger tests want banker's rounding, for the same "
+                "function and the same input, so they cannot both pass. Which partner's "
+                "rounding should win?",
+            )
+            self.fake.update(PRICING, status_detail="waiting_for_user")
+
+
+def start_hook_agent(
+    work: Path, hook_url: str, token: str, fake: FakeDevin, step: float, stop: threading.Event
+) -> HookAgent:
+    agent = HookAgent(work, hook_url, token, fake)
+
+    def drive() -> None:
+        agent.start()
+        while not stop.wait(step):
+            agent.step()
+
+    threading.Thread(target=drive, name="hook-agent", daemon=True).start()
     return agent
 
 

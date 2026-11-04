@@ -44,7 +44,7 @@ known-first-party = ["agent_watchdog"]
 
 [tool.mypy]
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "devin-plugin/hooks"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

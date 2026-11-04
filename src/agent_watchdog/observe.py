@@ -273,6 +273,12 @@ def _text_of(value: Any) -> str:
 
 _EDIT_TOOL = re.compile(r"(?i)(edit|write|patch|replace|create_file|str_replace|apply_diff)")
 _FILE_TOOL = re.compile(r"(?i)(edit|write|patch|replace|create_file|apply_diff|read|view|list_dir)")
+# Devin's tool names (hooks reference): its shell, and its file-changing tools.
+_HOOK_SHELL = re.compile(r"(?i)^(?:exec|shell|bash|run_command|mcp__.+__run_command)$")
+_HOOK_EDIT = re.compile(
+    r"(?i)^(?:edit|write|apply_patch|multi_edit|notebook_edit|mcp__.+__(?:edit|write)_file)$"
+)
+_PATCH_FILE = re.compile(r"(?m)^\*\*\* (?:Update|Add|Delete) File: (.+?)\s*$")
 _EXCEPTION = re.compile(r"(?:[A-Z][A-Za-z]*)?(?:Error|Exception)\b")
 _EXIT_LINE = re.compile(r"(?i)^\s*exit (?:code|status) \d+\s*$")
 _SHELL_ARGS = ("command", "cmd", "script", "shell")
@@ -313,6 +319,8 @@ class SessionView:
     observations: deque[Obs] = field(default_factory=lambda: deque(maxlen=WINDOW))
     pending: dict[str, tuple[str, str]] = field(default_factory=dict)  # MCP request -> call
     sources: list[str] = field(default_factory=list)  # MCP sessions linked into this view
+    hooked: list[str] = field(default_factory=list)  # hook sessions linked into this view
+    prompts: list[str] = field(default_factory=list)  # a person's messages, seen by hooks
     changed: bool = True
     link: str = ""  # an MCP log: the Devin session it said it belongs to
     created_at: float = 0.0  # when the platform says the session started
@@ -322,6 +330,10 @@ class SessionView:
     @property
     def is_devin(self) -> bool:
         return self.agent == "devin"
+
+    @property
+    def is_hook(self) -> bool:
+        return self.agent == "devin-hook"
 
     @property
     def acus_now(self) -> float:
@@ -344,11 +356,15 @@ class SessionView:
         return [o for o in self.recent("message", since) if o.source == "devin"]
 
     def absorb(self, other: SessionView) -> None:
-        """Take in a linked MCP session's view: its observations become this session's."""
+        """Take in a linked MCP or hook session's view: its observations become this one's."""
         merged = sorted([*self.observations, *other.observations], key=lambda o: o.at)
         self.observations = deque(merged, maxlen=WINDOW)
         self.pending.update(other.pending)
-        self.sources.append(other.session_id)
+        (self.hooked if other.is_hook else self.sources).append(other.session_id)
+        self.prompts.extend(other.prompts)
+        self.task = self.task or other.task
+        if other.last_progress > self.last_progress:
+            self.last_progress = other.last_progress
         self.first_seen = (
             min(t for t in (self.first_seen, other.first_seen) if t)
             if (self.first_seen or other.first_seen)
@@ -374,6 +390,8 @@ class SessionView:
         self.changed = True
         action = entry.get("event", {}).get("action")
         activity = entry.get("activity") or {}
+        if str(action).startswith("hook.") and activity.get("devin_session"):
+            self.link = str(activity["devin_session"])  # the hook saw the Devin session's id
         handler = getattr(self, "_" + str(action).replace(".", "_"), None)
         if handler is not None:
             handler(at, entry, activity)
@@ -512,6 +530,48 @@ class SessionView:
         output = str(kept_value(activity.get("output")) or "")
         seen = read_message(output)
         self._seen(at, Seen((command,), outcome, seen.errors, (), seen.blockers), "shell")
+
+    # -- Devin hooks: the agent's own tools, exactly ----------------------------------
+
+    def _hook_post_tool(self, at: float, entry: Entry, activity: dict[str, Any]) -> None:
+        tool = str(activity.get("tool") or "")
+        args = kept_value(activity.get("arguments"))
+        args = args if isinstance(args, dict) else {}
+        result = kept_value(activity.get("result"))
+        result = result if isinstance(result, dict) else {}
+        text = f"{result.get('output') or ''}\n{result.get('error') or ''}".strip()
+        outcome = entry.get("event", {}).get("outcome")
+        failed = outcome == "failure"
+        if _HOOK_SHELL.match(tool):
+            command = next((str(args[k]) for k in _SHELL_ARGS if args.get(k)), "")
+            if command:
+                self.observations.append(Obs("command", at, command, outcome, "hook"))
+                if outcome == "success" and TEST_OR_BUILD.search(command):
+                    self.progress(at, f"`{command}` passed")
+        elif _HOOK_EDIT.match(tool):
+            paths = [str(args[k]) for k in _PATH_ARGS if args.get(k)]
+            paths += _PATCH_FILE.findall(str(args.get("patch") or args.get("input") or ""))
+            for path in dict.fromkeys(paths):
+                self.observations.append(Obs("edit", at, path, source="hook"))
+        elif tool.startswith("mcp__"):
+            label = f"{tool} {' '.join(f'{k}={v}' for k, v in sorted(args.items()))}"[:200]
+            self.observations.append(Obs("command", at, label, outcome, "hook"))
+        if failed:
+            seen = read_message(text)
+            errors = tuple(sorted(seen.errors, key=lambda e: not _EXCEPTION.match(e))[:1])
+            if not errors:
+                lines = [ln for ln in text.splitlines() if ln.strip() and not _EXIT_LINE.match(ln)]
+                errors = tuple(lines[:1])
+            for error in errors:
+                self.observations.append(Obs("error", at, error_signature(error), source="hook"))
+            for blocker in seen.blockers:
+                self.observations.append(Obs("blocker", at, blocker, source="hook"))
+
+    def _hook_prompt(self, at: float, entry: Entry, activity: dict[str, Any]) -> None:
+        text = str(kept_value(activity.get("text")) or "")
+        if text and not text.startswith(NUDGE_MARK):
+            self.prompts.append(text[:2000])
+            self.task = self.task or text
 
     def _file_edit(self, at: float, entry: Entry, activity: dict[str, Any]) -> None:
         self.observations.append(Obs("edit", at, str(activity.get("path", "")), source="shell"))

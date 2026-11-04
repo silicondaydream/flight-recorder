@@ -1,0 +1,9 @@
+{
+  "requiredPlugins": [
+    {
+      "source": "git-subdir",
+      "url": "https://bitbucket.org/<workspace>/watchdog.git",
+      "path": "devin-plugin"
+    }
+  ]
+}

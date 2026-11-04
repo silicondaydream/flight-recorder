@@ -1,15 +1,17 @@
 # Setting up Devin
 
-Watchdog reads Devin sessions in two ways, and you set up both:
+Watchdog reads Devin sessions in up to three ways:
 
-1. **Devin's API**, for every session in the organization: messages, status,
-   credit use, PRs and tags. This needs only a service-user key.
-2. **The `watchdog-tools` MCP server**, for exact tool use: every command Devin
-   runs through it, with its exit code, and every edit. This runs on Devin's
-   session machine, behind Watchdog's proxy.
+| | What it gives Watchdog | Set up |
+|---|---|---|
+| **1. Devin's API** (required) | Every session in the organization: messages, status, credit use, PRs, tags | A service-user key (below) |
+| **2. Devin hooks** (recommended) | Every tool call Devin makes, with its own shell and editor: commands, outputs, outcomes, edits, as they happen | Watchdog's Devin plugin: [devin-hooks.md](devin-hooks.md) |
+| **3. The `watchdog-tools` MCP server** (optional) | Commands Devin chooses to run through it, with exit codes | Below |
 
-Without (2), Watchdog still works, but it reads commands and errors out of what
-Devin says, and marks those findings "from messages".
+With only (1), Watchdog still works, but it reads commands and errors out of
+what Devin says, and marks those findings "from messages". (2) makes them exact
+without asking anything of the agent. (3) predates (2) and is kept for clients
+without hooks, and for wrapping other MCP servers with `watchdog proxy`.
 
 ## 1. A service user
 
@@ -30,7 +32,12 @@ DEVIN_API_KEY=cog_... .venv/bin/watchdog import devin --dry-run
 
 It prints the sessions and messages it would record, and writes nothing.
 
-## 2. The MCP server
+## 2. Devin hooks
+
+See [devin-hooks.md](devin-hooks.md): what they are, how Watchdog's plugin
+uses them, setup, and a probe to check them in your organization first.
+
+## 3. The MCP server (optional)
 
 Print everything to paste, with your public URL filled in:
 

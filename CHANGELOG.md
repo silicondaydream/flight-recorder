@@ -5,6 +5,27 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Devin hooks.** Watchdog's Devin plugin (`devin-plugin/`) runs on every tool
+  call Devin makes, including its own shell (`exec`) and editor (`edit`,
+  `write`, `apply_patch`), and on prompts, session starts and wakes, and turn
+  ends. Each event goes to the new `POST /api/hook`. The hook script redacts,
+  spools locally, sends with a short timeout and backs off, never blocks a
+  tool, and always exits 0.
+- Watchdog records hook events in hash-chained logs. The rules read native
+  commands and edits exactly, and the dashboard shows **Exact (hooks)**.
+- Hook sessions are linked to their Devin session by a `devin-…` id when the
+  hook carries one, otherwise by matching the first prompt.
+- **Nudges through the hook**: **Settings → Escalation → Deliver nudges** can
+  put the nudge in the agent's context on its next tool call, and the session
+  page can send such a note by hand.
+- `watchdog hooks-setup` prints the plugin setup (`--export` writes the
+  plugin), `docs/devin-hooks.md` covers it all, and `docs/hook-probe.json`
+  checks Devin's hook payloads in your organization.
+- The demo adds a session seen through the real hook script, linked by its first
+  prompt and nudged through the hook.
+
 ## [0.2.0]
 
 ### Added

@@ -59,10 +59,15 @@ mapping.
 | `message` | Devin import | `from` (`devin`/`user`), `origin`, `username`, `event_id`, `text` |
 | `watchdog.log` / `.alert` / `.nudge` / `.sleep` / `.terminate` | Watchdog | `rung`, `dry_run`, `detail`, `findings`, `verdict`, `acus_consumed` |
 | `watchdog.held` / `.judged` / `.approval_requested` / `.approved` / `.declined` / `.recovered` | Watchdog | why it held back, the judge's verdict, who approved or declined |
-| `watchdog.manual.message` / `.sleep` / `.terminate` / `.mute` / `.unmute` | Watchdog | `by`, `detail`: a person acting from the dashboard |
+| `hook.post_tool` | Devin hook | `tool`, `arguments`, `result` (`success`, `output`, `error`), `exit_code`, `event_id`, `prompt_id`, `devin_session`; `event.outcome` |
+| `hook.pre_tool` | Devin hook | `tool`, `arguments` |
+| `hook.prompt` / `hook.stop` / `hook.compaction` | Devin hook | `text`: the person's message, the agent's last message, the compaction summary |
+| `hook.session_start` | Devin hook | `hook_source`: `startup` or `resume` |
+| `watchdog.manual.message` / `.note` / `.sleep` / `.terminate` / `.mute` / `.unmute` | Watchdog | `by`, `detail`: a person acting from the dashboard |
 | `watchdog.linked` | Watchdog | `mcp_session`: an MCP log that `link_session` tied to this Devin session |
 
-MCP logs shipped from Devin's session machines are stored as `mcp-<proxy session>.ndjson`,
+Hook events are recorded as `hook-<hook session>.ndjson`: the chain starts when
+Watchdog receives them. MCP logs shipped from Devin's session machines are stored as `mcp-<proxy session>.ndjson`,
 entry for entry as the proxy wrote them, so they verify with the same head hash.
 
 ## Kept payloads

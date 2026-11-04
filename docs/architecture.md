@@ -10,6 +10,12 @@ of what Watchdog saw is exactly the record of what it acted on.
 ```
  ┌───────────────────────────── Devin session machine (one per session) ──────────┐
  │                                                                                │
+ │   Devin's own tools (exec, edit, apply_patch, …)                               │
+ │     │ hooks: PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, Stop     │
+ │     ▼                                                                          │
+ │   watchdog_hook.py: redact, spool, send ── HTTPS POST /api/hook ───────────────┼──▶ HookStore
+ │                                            (bearer token; notes come back)     │    hook-<id>.ndjson
+ │                                                                                │
  │   Devin (the agent) ──stdio──▶ watchdog proxy ──stdio──▶ watchdog tools         │
  │                                    │                     run_command, edit_file, │
  │                                    │ appends             write_file, read_file,  │
@@ -22,7 +28,7 @@ of what Watchdog saw is exactly the record of what it acted on.
  ┌────────────────────────────────── Watchdog host ──────────────────────────────────┐
  │                                                                                   │
  │  public listener ── ingest: appends an entry only if it chains on ──┐            │
- │  (/api/ingest, /approve)                                            ▼            │
+ │  (/api/ingest, /api/hook, /approve)                                 ▼            │
  │                                   log directory: one hash-chained log per session │
  │  importer ── polls Devin's API ──▶ devin-<id>.ndjson   mcp-<id>.ndjson            │
  │  (sessions, messages,                     │                                        │
@@ -53,6 +59,8 @@ of what Watchdog saw is exactly the record of what it acted on.
 | Piece | File | Does |
 |---|---|---|
 | MCP proxy | `proxy.py` | Starts a stdio MCP server and relays JSON-RPC both ways, byte for byte. Records every `tools/call` before forwarding it, then its result, outcome and duration. |
+| Hook script | `devin_hook.py` (= `devin-plugin/hooks/watchdog_hook.py`) | Runs on Devin's machine for each hook event. Redacts, spools locally, sends to `/api/hook` with a short timeout and a backoff, and prints any waiting note as `additionalContext`. Never blocks a tool. |
+| Hook store | `hooks.py` | Records hook events into a hash-chained log per hook session. Works out each tool's outcome (exit code first, else `success`). Builds the plugin's files. |
 | Tools server | `tools.py` | The MCP server Devin uses for shell and file work, so commands arrive with real exit codes. Its `Shipper` thread sends the proxy's log to Watchdog. |
 | Log | `chain.py`, `reader.py` | One NDJSON file per session. Each entry holds the SHA-256 of the one before it. `follow()` yields only entries whose link and hash check out. |
 | Redaction | `redact.py` | Removes tokens, keys and passwords before anything is written, then caps payload size. |
@@ -65,6 +73,10 @@ of what Watchdog saw is exactly the record of what it acted on.
 | Notifier | `notify.py` | Decides which notices become Teams cards: triggers, rate limits, digest, verbosity. |
 | AI judge | `judge.py` | An OpenAI chat model with a strict JSON schema. It can stop a step, never add one. |
 | Dashboard | `dashboard.py`, `.html` | The single-page console: sessions, live log, session detail, settings, controls. |
+
+Hook sessions are linked to their Devin session by a `devin-…` id when the
+hook carries one, otherwise by matching the first prompt the hook saw against
+each session's messages from the API. See [devin-hooks.md](devin-hooks.md).
 
 ## A stuck session, step by step
 
@@ -96,8 +108,8 @@ of what Watchdog saw is exactly the record of what it acted on.
   Watchdog would have done, and every action has its evidence in a
   tamper-evident record.
 - **Exact beats heuristic.** Devin's API exposes messages, status and credit
-  use, but not the commands a session ran. Through the tools server they are
-  exact. Without it, the rules read commands out of what Devin says, and every
+  use, but not the commands a session ran. Through Devin's hooks (or the tools
+  server) they are exact. Without it, the rules read commands out of what Devin says, and every
   finding says which kind it is.
 - **One step at a time, with a cooldown.** An agent gets a chance to recover
   after each step, and a false positive costs a Teams card, not a terminated
@@ -128,9 +140,13 @@ See [SECURITY.md](../SECURITY.md) for the threat table.
 
 ## Known limits
 
-- **Exact events need Devin's cooperation.** It must call `link_session` and use
-  `run_command`; the Knowledge note asks it to. Anything run in its own shell is
-  only seen through its messages.
+- **Hooks are best effort.** Devin runs plugin hooks "best effort, fail open",
+  and only in sessions started after the plugin was installed. Without them,
+  Watchdog falls back to what the API shows. Through the MCP route instead,
+  exact events need Devin to call `link_session` and use `run_command`.
+- **Linking a hook session can need the first prompt.** If Devin's hook
+  `session_id` isn't the API's id, Watchdog matches prompts; two sessions
+  started with the identical message can't be told apart, and stay alerts-only.
 - **Sleep is archive.** Devin's API has no separate sleep call; archiving puts a
   running session to sleep. Watchdog tags it `watchdog:slept`.
 - **Polling.** Devin has no outbound session events, so Watchdog polls (every 30

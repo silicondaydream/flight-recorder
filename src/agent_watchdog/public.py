@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from agent_watchdog.approvals import Signer
 from agent_watchdog.engine import Watchdog
+from agent_watchdog.hooks import HookStore
 from agent_watchdog.ingest import IngestStore
 
 MAX_BODY = 8 * 1024 * 1024
@@ -72,6 +73,7 @@ def serve_public(
     port: int,
     *,
     ingest_token: str = "",
+    hook_store: HookStore | None = None,
 ) -> ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_: Any) -> None:
@@ -108,10 +110,39 @@ def serve_public(
             path = urlsplit(self.path).path
             if path == "/api/ingest" and store is not None and ingest_token:
                 return self._ingest()
+            if path == "/api/hook" and hook_store is not None and ingest_token:
+                return self._hook()
             if path == "/approve" and signer is not None:
                 form = parse_qs(self._body().decode("utf-8", errors="replace"))
                 return self._approval(form, confirm=True)
             self._json(404, {"error": "not found"})
+
+        def _authorised(self) -> bool:
+            given = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            if not hmac.compare_digest(given, ingest_token):
+                self._json(401, {"error": "bad ingest token"})
+                return False
+            if int(self.headers.get("Content-Length") or 0) > MAX_BODY:
+                self._json(413, {"error": "too large"})
+                return False
+            return True
+
+        def _hook(self) -> None:
+            if hook_store is None or not self._authorised():
+                return
+            try:
+                body = json.loads(self._body() or b"{}")
+            except ValueError:
+                return self._json(400, {"error": "bad json"})
+            events = body.get("events") if isinstance(body, dict) else None
+            if not isinstance(events, list):
+                return self._json(400, {"error": 'send {"events": [...]}'})
+            try:
+                accepted, skipped, sessions = hook_store.add(events)
+            except ValueError as exc:
+                return self._json(400, {"error": str(exc)})
+            notes = engine.take_hook_notes(sessions)
+            self._json(200, {"accepted": accepted, "skipped": skipped, "context": notes})
 
         def _ingest(self) -> None:
             if store is None:

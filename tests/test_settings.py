@@ -522,3 +522,9 @@ def test_the_openai_judge_asks_for_strict_json(
     assert seen["model"] == "my-model" and seen["reasoning_effort"] == "low"
     assert seen["response_format"]["json_schema"]["strict"] is True
     assert "<session>" in seen["messages"][1]["content"]
+
+
+def test_the_configuration_doc_lists_every_setting() -> None:
+    doc = (Path(__file__).parent.parent / "docs" / "configuration.md").read_text("utf-8")
+    missing = [f.key for f in FIELDS if f"`{f.key}`" not in doc]
+    assert missing == [], f"regenerate docs/configuration.md's table: {missing}"

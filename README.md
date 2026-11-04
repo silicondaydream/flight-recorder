@@ -7,8 +7,11 @@ progress, blocked, or drifting off its task. Then it acts, one step at a time:
 it alerts your Teams channel, nudges the agent, puts the session to sleep, and,
 with a person's approval, terminates it.
 
-It is built for [Devin](https://devin.ai) sessions, and it works as an **MCP
-proxy**, so it sees the agent's tool use exactly rather than guessing.
+It is built for [Devin](https://devin.ai) sessions. It sees the agent's tool
+use exactly, rather than guessing from what the agent says about itself, in two
+ways: through **Devin's hooks** (every tool call Devin makes, including its own
+shell and editor) and as an **MCP proxy** (every call to the MCP servers you give
+it).
 
 ![The Watchdog dashboard](docs/img/watchdog-dashboard.png)
 
@@ -39,32 +42,39 @@ That is how Watchdog knows, for example, that `python3 -m unittest` failed with
 exit code 1 eleven times in a row, rather than inferring it from what the agent
 says about itself.
 
+An MCP proxy sees only MCP calls. Devin also has built-in tools (its shell,
+editor and browser) that never go through MCP. For those, Watchdog uses
+**Devin's hooks**: commands Devin itself runs before and after every tool call,
+in cloud sessions too. Watchdog's Devin plugin sends each one to Watchdog. See
+[docs/devin-hooks.md](docs/devin-hooks.md).
+
 ## How Watchdog works
 
 ```
-   ┌──────────────── Devin session machine ─────────────────┐
-   │  Devin ──▶ watchdog proxy ──▶ watchdog tools            │      Devin's API (v3)
-   │            (records)          (run_command, edit_file…)  │      sessions, messages,
-   └───────────────┬──────────────────────────────────────────┘      status, ACUs
-                   │ ships each verified log entry                         │
-                   ▼  POST /api/ingest                                    │ polled
-   ┌──────────────────────────────── Watchdog ────────────────────────────▼─────┐
-   │                                                                            │
-   │   hash-chained session logs  ◀── importer                                   │
-   │            │ verified entries only                                         │
-   │            ▼                                                               │
-   │   session views ──▶ 7 rules ──▶ findings ──▶ (optional AI judge)           │
-   │                                    │                                       │
-   │                     escalation ladder + guardrails ──▶ Watchdog's own log  │
-   │                                    │                                       │
-   │      dashboard (live log, session detail, settings)    notifier ──▶ Teams   │
-   └────────────────────────────────────┼──────────────────────────────────────┘
-                                         ▼
-                      nudge · sleep · terminate (Devin API)
+ ┌────────────────────── Devin session machine ───────────────────────┐
+ │                                                                    │
+ │  Devin's own tools (exec, edit, …) ──hooks──▶ watchdog_hook.py ────┼──┐ POST /api/hook
+ │                                                                    │  │
+ │  Devin ──MCP──▶ watchdog proxy ──▶ any MCP server (optional) ──────┼──┤ POST /api/ingest
+ └────────────────────────────────────────────────────────────────────┘  │
+                                                                         │      Devin's API (v3):
+ ┌───────────────────────────────── Watchdog ────────────────────────────▼─┐    sessions, messages,
+ │                                                                         │    status, ACUs
+ │   hash-chained logs: one per session, per hook session, per MCP log  ◀──┼──── importer (polls)
+ │            │ verified entries only                                      │
+ │            ▼                                                            │
+ │   session views ──▶ 7 rules ──▶ findings ──▶ (optional AI judge)        │
+ │                                    │                                    │
+ │                     escalation ladder + guardrails ──▶ Watchdog's own log│
+ │                                    │                                    │
+ │   dashboard (live log, session detail, settings)     notifier ──▶ Teams │
+ └────────────────────────────────────┼────────────────────────────────────┘
+                                      ▼
+              nudge (chat, or a note through the hook) · sleep · terminate
 ```
 
-1. **Record.** Devin's tool calls go through the proxy; Devin's chat, status
-   and credit use come from its API. Everything lands in append-only logs where
+1. **Record.** Devin's tool calls come from its hooks (and the proxy, for MCP
+   servers); its chat, status and credit use come from its API. Everything lands in append-only logs where
    each entry carries the hash of the one before it, so an edited or removed
    entry is detected.
 2. **Judge.** Seven rules run every couple of seconds over what was recorded:
@@ -95,10 +105,10 @@ make setup                       # Python 3.11+
 .venv/bin/watchdog demo          # then open http://127.0.0.1:8765
 ```
 
-The demo runs the real pipeline against a scripted stand-in for Devin's API: six
-sessions, one stuck in a loop, one healthy, one waiting on a person, one opted
-out, one drifting off task, and one driven through a real proxy and tools
-server. Within two minutes the stuck sessions are nudged, put to sleep, and one
+The demo runs the real pipeline against a scripted stand-in for Devin's API: seven
+sessions: one stuck in a loop, one healthy, one waiting on a person, one opted
+out, one drifting off task, one driven through a real proxy and tools server,
+and one seen through the real hook script, nudged through the hook. Within two minutes the stuck sessions are nudged, put to sleep, and one
 asks for approval to terminate.
 
 ## Run it on your organization
@@ -117,7 +127,8 @@ changed from the dashboard's **Settings** panel and applied within seconds.
 | Guide | For |
 |---|---|
 | [docs/hackathon.md](docs/hackathon.md) | The day-of runbook: checklist, demo script, fallbacks |
-| [docs/devin.md](docs/devin.md) | Setting up Devin: service user, MCP server, Knowledge note |
+| [docs/devin.md](docs/devin.md) | Setting up Devin: the service user, the hooks plugin, the optional MCP server |
+| [docs/devin-hooks.md](docs/devin-hooks.md) | Devin's hooks in detail: events, cloud behaviour, the plugin, linking, the probe |
 | [docs/teams.md](docs/teams.md) | The Teams webhook, notification settings, approving from Teams |
 | [docs/configuration.md](docs/configuration.md) | Every setting and environment variable |
 | [docs/architecture.md](docs/architecture.md) | How it works, design choices, security |
@@ -132,7 +143,8 @@ changed from the dashboard's **Settings** panel and applied within seconds.
 | `watchdog demo` | The whole thing against a scripted fake, no keys |
 | `watchdog proxy -- <server command>` | Record an MCP server (put it in an MCP client's config) |
 | `watchdog tools` | The shell and editor MCP server Devin uses through the proxy |
-| `watchdog mcp-setup <public url>` | Print what to paste into Devin |
+| `watchdog hooks-setup <public url>` | Print the Devin plugin setup for the hooks (`--export DIR` writes the plugin out) |
+| `watchdog mcp-setup <public url>` | Print the MCP server setup (optional) |
 | `watchdog approve <session>` / `decline` | Decide a pending terminate |
 | `watchdog replay <logs>` | Run the rules over recorded sessions, acting on nothing |
 | `watchdog verify <logs>` / `tail -f` | Check logs have not been altered / follow them live |
@@ -142,7 +154,8 @@ changed from the dashboard's **Settings** panel and applied within seconds.
 
 ```
 src/agent_watchdog/
-  proxy.py tools.py           the MCP proxy, and the tools server Devin uses
+  proxy.py tools.py           the MCP proxy, and the tools server Devin can use
+  devin_hook.py hooks.py      the hook script Devin runs (also in devin-plugin/); receiving it
   chain.py reader.py redact.py   the hash-chained log, verified reading, secret redaction
   devin.py actions.py         Devin's API: reading sessions, and nudge/sleep/terminate
   ingest.py public.py         receiving logs from Devin's machines; approval pages
@@ -151,6 +164,7 @@ src/agent_watchdog/
   notify.py judge.py          what reaches Teams; the optional AI judge
   dashboard.py dashboard.html the dashboard
   cli.py runner.py demo.py    the commands, the threads, the scripted demo
+devin-plugin/                 Watchdog's Devin plugin: hooks.json and the hook script
 demo-target/                  a project an agent cannot finish (for the demo)
 tests/
 ```
@@ -162,6 +176,6 @@ make check     # ruff, mypy --strict, all tests
 make fmt       # format and auto-fix
 ```
 
-The proxy, the log and the tools server use only the Python standard library,
-so they run on any machine with Python. See [CONTRIBUTING.md](CONTRIBUTING.md)
+The proxy, the log, the tools server and the hook script use only the Python
+standard library, so they run on any machine with Python. See [CONTRIBUTING.md](CONTRIBUTING.md)
 and [SECURITY.md](SECURITY.md).

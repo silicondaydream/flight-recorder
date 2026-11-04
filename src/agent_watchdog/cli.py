@@ -98,6 +98,7 @@ def _hostport(value: str) -> tuple[str, int]:
 
 def _public(engine: Watchdog, address: str, log_dir: Path, ingest_token: str) -> tuple[str, Any]:
     """Start the public listener (ingest + approval pages). Returns its URL."""
+    from agent_watchdog.hooks import HookStore
     from agent_watchdog.ingest import IngestStore
     from agent_watchdog.public import serve_public
 
@@ -109,6 +110,7 @@ def _public(engine: Watchdog, address: str, log_dir: Path, ingest_token: str) ->
         host,
         port,
         ingest_token=ingest_token,
+        hook_store=HookStore(log_dir) if ingest_token else None,
     )
     bound_host, bound_port = server.server_address[:2]
     return f"http://{bound_host!s}:{bound_port}", server
@@ -224,6 +226,7 @@ def _demo(args: argparse.Namespace) -> int:
             "teams.per_session_seconds": 0.0,
             "teams.runtime_minutes": 1.0,
             "teams.acus_threshold": 4.0,
+            "ladder.nudge_channel": "both",
         },
     )
     engine = Watchdog(
@@ -257,6 +260,8 @@ def _demo(args: argparse.Namespace) -> int:
     public, _ = _public(engine, f"{args.host}:{args.port + 1}", log_dir, ingest_token)
     ingest = f"http://127.0.0.1:{args.port + 1}/api/ingest"
     demo.start_mcp_agent(work, ingest, ingest_token, fake, args.step, stop)
+    hook_url = f"http://127.0.0.1:{args.port + 1}/api/hook"
+    demo.start_hook_agent(work, hook_url, ingest_token, fake, args.step, stop)
     print(f"watchdog demo: dashboard on {url}", file=sys.stderr)
     print(f"watchdog demo: public listener (ingest, approval pages) on {public}", file=sys.stderr)
     print(f"watchdog demo: logs in {log_dir}", file=sys.stderr)
@@ -337,6 +342,50 @@ def _mcp_setup(args: argparse.Namespace) -> int:
     )
     print("3. Add this as organization Knowledge, so Devin uses the tools:\n")
     print("   " + KNOWLEDGE.replace("\n", "\n   "))
+    return 0
+
+
+def _hooks_setup(args: argparse.Namespace) -> int:
+    import json
+
+    from agent_watchdog.hooks import export_plugin
+
+    hook_url = f"{args.public_url.rstrip('/')}/api/hook"
+    if args.export:
+        for path in export_plugin(Path(args.export)):
+            print(f"wrote {path}")
+        print()
+    source = {"source": "git-subdir", "url": args.repo, "path": args.path}
+    manifest = {
+        "requiredPlugins": [
+            {
+                **source,
+                "env": {
+                    "WATCHDOG_HOOK_URL": hook_url,
+                    "WATCHDOG_INGEST_TOKEN": "secret:org:WATCHDOG_INGEST_TOKEN",
+                },
+            }
+        ]
+    }
+
+    def show(value: Any) -> str:
+        return "   " + json.dumps(value, indent=2).replace("\n", "\n   ")
+
+    print("Watchdog's Devin hooks: Devin's own tool calls, sent to Watchdog as they happen.\n")
+    print("1. Make the secret. Devin -> Settings -> Secrets, organization scope:")
+    print("   WATCHDOG_INGEST_TOKEN = the same value as on the Watchdog machine.\n")
+    print("2. Install the plugin for the organization. Devin -> Customize -> Plugins ->")
+    print("   Plugin settings (gear) -> Edit manifest, Organization scope. Add to")
+    print("   requiredPlugins (keep any entries already there):\n")
+    print(show(manifest) + "\n")
+    print("   Or, to watch only the sessions of one repository, add this to that")
+    print("   repository's .devin/config.json (secrets as plugin env are documented")
+    print("   for the managed manifest above; check they reach repository plugins too):\n")
+    print(show({"requiredPlugins": [source]}) + "\n")
+    print("3. Start a new session (running ones keep what they loaded). In Watchdog, its")
+    print("   card shows Exact (hooks) once its first tool call arrives.\n")
+    print("Optional: Settings -> Escalation -> Deliver nudges -> Note via hooks, so nudges")
+    print("land in the agent's context on its next tool call instead of the chat.")
     return 0
 
 
@@ -473,6 +522,22 @@ def main(argv: list[str] | None = None) -> int:
         help="the git URL Devin's machines pip install Watchdog from",
     )
     setup.set_defaults(func=_mcp_setup)
+
+    hooks = sub.add_parser(
+        "hooks-setup",
+        help="print the Devin plugin setup for Watchdog's hooks (recommended over MCP)",
+    )
+    hooks.add_argument("public_url", help="WATCHDOG_PUBLIC_URL: where Devin's machines reach you")
+    hooks.add_argument(
+        "--repo",
+        default="https://bitbucket.org/<workspace>/watchdog.git",
+        help="the git URL of the repository that holds the plugin",
+    )
+    hooks.add_argument(
+        "--path", default="devin-plugin", help="the plugin's folder in that repository"
+    )
+    hooks.add_argument("--export", help="also write the plugin's files to this folder")
+    hooks.set_defaults(func=_hooks_setup)
 
     replay = sub.add_parser("replay", help="run the rules over recorded logs; act on nothing")
     replay.add_argument("path", help="a log file or a directory of logs")

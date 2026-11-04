@@ -1,0 +1,62 @@
+{
+  "SessionStart": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "sh -c 'f=\"$HOME/watchdog-hook-probe.log\"; { echo \"== SessionStart $(date -u +%FT%TZ)\"; cat; echo; echo \"env names:\"; env | cut -d= -f1 | sort | tr \"\\n\" \" \"; echo; echo \"devin ids in env:\"; env | grep -o \"devin-[0-9a-f]\\{8,\\}\" | sort -u; echo \"plugin root: ${DEVIN_PLUGIN_ROOT:-} ${PLUGIN_ROOT:-} ${CLAUDE_PLUGIN_ROOT:-}\"; } >> \"$f\"'",
+          "timeout": 10
+        }
+      ]
+    }
+  ],
+  "UserPromptSubmit": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "sh -c 'f=\"$HOME/watchdog-hook-probe.log\"; { echo \"== $(date -u +%FT%TZ)\"; cat; echo; } >> \"$f\"'",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "PreToolUse": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "sh -c 'f=\"$HOME/watchdog-hook-probe.log\"; { echo \"== $(date -u +%FT%TZ)\"; cat; echo; } >> \"$f\"'",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "PostToolUse": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "sh -c 'f=\"$HOME/watchdog-hook-probe.log\"; { echo \"== $(date -u +%FT%TZ)\"; cat; echo; } >> \"$f\"'",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "Stop": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "sh -c 'f=\"$HOME/watchdog-hook-probe.log\"; { echo \"== $(date -u +%FT%TZ)\"; cat; echo; } >> \"$f\"'",
+          "timeout": 5
+        }
+      ]
+    }
+  ]
+}

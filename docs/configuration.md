@@ -24,13 +24,15 @@ changing the same setting in the panel replaces them.
 | `TEAMS_WEBHOOK_URL` | Watchdog | Optional. Teams cards (see [teams.md](teams.md)) |
 | `WATCHDOG_PUBLIC_URL` | Watchdog | The https address browsers and Devin's machines reach the public listener at. Turns approval links on |
 | `WATCHDOG_APPROVAL_TOKEN` | Watchdog | A random secret. Signs approval links. Also required by the dashboard for changes when it is not on loopback |
-| `WATCHDOG_INGEST_TOKEN` | Watchdog *and* Devin | A random secret. Devin's machines send it with shipped logs. Turns ingest on |
+| `WATCHDOG_INGEST_TOKEN` | Watchdog *and* Devin | A random secret. Devin's machines send it with hook events and shipped logs. Turns `/api/hook` and `/api/ingest` on |
 | `OPENAI_API_KEY` | Watchdog | Optional. The AI judge: a ChatGPT Enterprise or OpenAI platform API key |
 | `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID` | Watchdog | Optional. Pin the judge's calls to an OpenAI organization or project |
 | `OPENAI_BASE_URL` | Watchdog | Optional. A different endpoint, such as Azure OpenAI or a gateway |
 | `WATCHDOG_DRY_RUN` | Watchdog | Optional. `1` or `0`: the dry-run setting for this run |
 | `WATCHDOG_LOG_DIR` | both | Optional. Where logs go (default `~/.local/share/watchdog`) |
 | `WATCHDOG_INGEST_URL` | Devin | For `watchdog tools`: `$WATCHDOG_PUBLIC_URL/api/ingest`. Must be https |
+| `WATCHDOG_HOOK_URL` | Devin | For the hook plugin: `$WATCHDOG_PUBLIC_URL/api/hook`. Must be https. Set in the plugin's manifest `env` |
+| `WATCHDOG_HOOK_DIR` | Devin | Optional. Where the hook script spools events (default `~/.watchdog-hooks`) |
 
 ## Settings
 
@@ -61,6 +63,7 @@ The steps Watchdog takes for a stuck session, and how fast.
 | Step: nudge | `ladder.nudge` | on | Send the session a message. Off: skipped. |
 | Step: sleep | `ladder.sleep` | on | Put the session to sleep. Off: skipped. |
 | Step: terminate | `ladder.terminate` | on | Ask a person to approve terminating. Off: Watchdog stops at the step before. |
+| Deliver nudges | `ladder.nudge_channel` | Chat message | As a chat message, or as a note the agent reads on its next tool call (needs Watchdog's Devin hooks; falls back to a message for sessions without them). (Chat message, Note via hooks, Both) |
 | While waiting on a person | `ladder.waiting_on_human` | Alert, no more | A session waiting for a reply is never nudged. How far it may go instead. (Log only, Alert, no more) |
 | Approval links valid for | `ladder.approval_minutes` | 60 min | How long the Teams approval buttons work. (5–1440) |
 

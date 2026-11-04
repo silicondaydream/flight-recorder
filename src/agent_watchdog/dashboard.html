@@ -299,8 +299,15 @@ svg.spark { width: 100%; height: 90px; display: block; }
     <div class="actions" id="d-actions"></div>
     <div class="composer" id="composer">
       <label class="sr" for="composer-text">Message to send</label>
-      <textarea id="composer-text" placeholder="A message for the agent. Watchdog prefixes it with [Watchdog]."></textarea>
-      <button type="button" class="primary" id="composer-send">Send</button>
+      <textarea id="composer-text" placeholder="For the agent. Watchdog prefixes it with [Watchdog]."></textarea>
+      <div style="display:grid;gap:6px">
+        <label class="sr" for="composer-how">Deliver as</label>
+        <select id="composer-how" class="search" style="min-width:0">
+          <option value="message">Chat message</option>
+          <option value="note">Note on its next tool call (hooks)</option>
+        </select>
+        <button type="button" class="primary" id="composer-send">Send</button>
+      </div>
     </div>
     <div class="tabs" role="tablist" id="d-tabs">
       <button type="button" role="tab" data-t="overview" aria-selected="true">Overview</button>
@@ -391,7 +398,9 @@ function worst(s) {
 }
 function sessionCard(s, st) {
   const w = worst(s);
-  const exact = s.mcp_sources.length > 0;
+  const hooked = (s.hook_sources || []).length > 0, mcp = s.mcp_sources.length > 0, exact = hooked || mcp;
+  const badgeText = hooked && mcp ? "Exact (hooks + MCP)" : hooked ? "Exact (hooks)" : mcp ? "Exact (MCP)" : "From messages";
+  const badgeTip = hooked ? "Devin's own tool calls arrive through Watchdog's hooks, with outcomes" : mcp ? "Commands come from the watchdog-tools MCP server, with exit codes" : "Commands are read from the agent's messages";
   return h("article", { class: `card t-${s.tone}` },
     h("div", { class: "row top" },
       h("div", { style: "min-width:0" },
@@ -400,7 +409,7 @@ function sessionCard(s, st) {
           s.runtime_minutes != null ? h("span", {}, `running ${mins(s.runtime_minutes)}`) : null,
           h("span", {}, `${s.acus.toFixed(1)} ACUs`),
           s.last_activity != null ? h("span", {}, `active ${ago(s.last_activity)}`) : null,
-          h("span", { class: `badge${exact ? " exact" : ""}`, title: exact ? "Commands come from the watchdog-tools MCP server, with exit codes" : "Commands are read from the agent's messages" }, exact ? "Exact (MCP)" : "From messages"))),
+          h("span", { class: `badge${exact ? " exact" : ""}`, title: badgeTip }, badgeText))),
       s.url ? h("a", { class: "devin-link", href: s.url, target: "_blank", rel: "noopener" }, "Open in Devin ↗") : null),
     w ? h("p", { class: "what" }, h("b", {}, `${RULE[w.rule] || w.rule}: `), w.summary, s.findings.length > 1 ? ` (+${s.findings.length - 1} more)` : "")
       : h("p", { class: "what quiet" }, "No problems detected."),
@@ -518,7 +527,7 @@ async function act(action, text) {
   if (words[action] && !confirm(words[action])) return;
   const r = await send("POST", "api/action", { session_id: ui.open, action, text });
   toast(r.data.detail || (r.ok ? "Done" : "Could not do that"));
-  if (action === "message" && r.ok) { $("composer-text").value = ""; $("composer").classList.remove("open"); }
+  if ((action === "message" || action === "note") && r.ok) { $("composer-text").value = ""; $("composer").classList.remove("open"); }
   loadDetail(); refresh();
 }
 function renderDetail() {
@@ -569,7 +578,7 @@ function overview(d) {
       stat("Escalation step", d.rung_name ? RUNG[d.rung_name] : "none yet"),
       stat("Held back", d.held),
       stat("Tags", d.tags.join(", ")),
-      stat("Commands from", d.mcp_sources.length ? `MCP (${d.mcp_sources.length} log${d.mcp_sources.length > 1 ? "s" : ""})` : "the agent's messages"),
+      stat("Commands from", [ (d.hook_sources || []).length ? "Devin hooks" : "", d.mcp_sources.length ? "MCP" : "" ].filter(Boolean).join(" + ") || "the agent's messages"),
       stat("Muted", d.muted ? "yes" : "no"),
       stat("Declined by", d.declined_by)),
     h("h3", {}, "ACUs over time"), spark(d.acus_series),
@@ -604,12 +613,21 @@ function summarise(e) {
     case "tool.result": { const r = val(a.result) || {}; const t = (r.content || []).map(c => c.text || "").join(" ") || r.message || ""; return `${a.tool} → ${ev.outcome}  ${t.slice(0, 240)}`; }
     case "session.status": return `status ${a.status}${a.status_detail ? " · " + a.status_detail : ""}`;
     case "session.snapshot": { const s = val(a.session) || {}; return `snapshot: ${s.status || ""}${s.status_detail ? " · " + s.status_detail : ""}, ${s.acus_consumed ?? "?"} ACUs`; }
+    case "hook.pre_tool": { const g = val(a.arguments) || {}; return `${a.tool} about to run  ${g.command || g.file_path || g.path || JSON.stringify(g).slice(0, 160)}`; }
+    case "hook.post_tool": { const g = val(a.arguments) || {}; const r = val(a.result) || {}; const out = String(r.output || r.error || "").split("\n").slice(-2).join(" ").slice(0, 240);
+      return `${a.tool} → ${ev.outcome}${a.exit_code != null ? " (exit " + a.exit_code + ")" : ""}  ${g.command || g.file_path || g.path || ""}  ${out}`; }
+    case "hook.prompt": return `Person: ${val(a.text) || ""}`;
+    case "hook.session_start": return a.hook_source === "resume" ? "session woke up" : "session started";
+    case "hook.stop": return `agent ended its turn${val(a.text) ? ": " + val(a.text) : ""}`;
+    case "hook.compaction": return "agent compacted its context";
     default: return ev.action || "";
   }
 }
 function activity(d) {
-  const kinds = ["all", "message", "tool", "status", "snapshot"];
-  const pick = e => { const a = (e.event || {}).action || ""; return ui.sigFilter === "all" || (ui.sigFilter === "tool" ? a.startsWith("tool.") : ui.sigFilter === "status" ? a === "session.status" : ui.sigFilter === "snapshot" ? a === "session.snapshot" : a === ui.sigFilter); };
+  const kinds = ["all", "message", "tool", "hook", "status", "snapshot"];
+  const pick = e => { const a = (e.event || {}).action || ""; const f = ui.sigFilter;
+    return f === "all" || (f === "tool" ? a.startsWith("tool.") || a === "hook.pre_tool" || a === "hook.post_tool" : f === "hook" ? a.startsWith("hook.")
+      : f === "status" ? a === "session.status" : f === "snapshot" ? a === "session.snapshot" : f === "message" ? a === "message" || a === "hook.prompt" : a === f); };
   const rows = [];
   [...d.entries].reverse().filter(pick).forEach((e, i) => {
     const ev = e.event || {}; const key = `${e.session.id}:${ev.sequence}`;
@@ -620,9 +638,9 @@ function activity(d) {
     if (ui.expanded.has(key) || hl) rows.push(h("pre", { class: "json" }, JSON.stringify(e, null, 2)));
   });
   return [
-    h("p", { class: "group-desc" }, "Every recorded entry for this session, newest first: messages, MCP tool calls with their arguments and results, status changes. Click a row for the full recorded entry, including its hash-chain link."),
+    h("p", { class: "group-desc" }, "Every recorded entry for this session, newest first: messages, every tool call Devin made (through its hooks, and through MCP) with arguments and results, status changes. Click a row for the full recorded entry, including its hash-chain link."),
     h("div", { class: "filters" }, kinds.map(k => h("button", { type: "button", "aria-pressed": String(ui.sigFilter === k), onclick: () => { ui.sigFilter = k; renderDetail(); } },
-      { all: "All", message: "Messages", tool: "Tool calls", status: "Status", snapshot: "Snapshots" }[k]))),
+      { all: "All", message: "Messages", tool: "Tool calls", hook: "Hooks", status: "Status", snapshot: "Snapshots" }[k]))),
     rows.length ? rows : h("div", { class: "empty" }, "Nothing recorded yet."),
   ];
 }
@@ -722,7 +740,7 @@ $("level").addEventListener("click", e => { const b = e.target.closest("button")
   try { localStorage.setItem("wd-level", String(ui.level)); } catch (_) {} if (ui.state) render(ui.state); });
 $("pause").addEventListener("click", () => { ui.paused = !ui.paused; $("pause").textContent = ui.paused ? "Resume" : "Pause"; $("pause").setAttribute("aria-pressed", String(ui.paused)); if (!ui.paused && ui.state) render(ui.state); });
 $("d-tabs").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; ui.tab = b.dataset.t; ui.sigFilter = "all"; renderDetail.scrolled = false; renderDetail(); });
-$("composer-send").addEventListener("click", () => act("message", $("composer-text").value));
+$("composer-send").addEventListener("click", () => act($("composer-how").value, $("composer-text").value));
 $("open-settings").addEventListener("click", () => openSettings());
 $("s-save").addEventListener("click", saveSettings);
 $("s-reset").addEventListener("click", () => { ui.draft = {}; $("s-msg").textContent = ""; renderSettings(true); });
