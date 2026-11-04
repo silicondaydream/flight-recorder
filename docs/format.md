@@ -2,7 +2,7 @@
 
 One file per recorded session, one JSON object per line (NDJSON), UTF-8,
 created with mode `0600`. Field names follow the Elastic Common Schema where one
-exists, so ECS-aware tools (Lincoln, Elastic, anything that reads NDJSON) need no
+exists, so ECS-aware tools (Elastic, OpenSearch, anything that reads NDJSON) need no
 mapping.
 
 ## An entry
@@ -19,7 +19,7 @@ mapping.
   },
   "session": { "id": "8a3978ab…" },
   "agent": { "name": "mcp-proxy" },
-  "flight": {
+  "activity": {
     "server": "demo",
     "tool": "echo",
     "request_id": "1",
@@ -33,19 +33,19 @@ mapping.
 | Field | Meaning |
 |---|---|
 | `@timestamp` | When it happened. An importer sets the platform's own time. |
-| `event.ingested` | When Flight Recorder wrote it |
+| `event.ingested` | When Watchdog wrote it |
 | `event.sequence` | 1, 2, 3… within the file, with no gaps |
 | `event.action` | What it records (see below) |
 | `event.outcome` | `success`, `failure` or `unknown`, where it applies |
 | `event.duration` | Nanoseconds, from the call to its result (ECS unit) |
 | `session.id` | The proxy's session id, or an importer's session id |
 | `agent.name` | `mcp-proxy`, or the importer's platform |
-| `flight.*` | The recorded content, by action |
+| `activity.*` | The recorded content, by action |
 | `chain.previous`, `chain.hash` | The links |
 
 ## Actions
 
-| Action | Written by | `flight` holds |
+| Action | Written by | `activity` holds |
 |---|---|---|
 | `session.start` | proxy | `server`, `command` (redacted), `cwd`, `log` |
 | `session.initialize` | proxy | `client`: the client's name and version |
@@ -59,6 +59,7 @@ mapping.
 | `message` | Devin import | `from` (`devin`/`user`), `origin`, `username`, `event_id`, `text` |
 | `watchdog.log` / `.alert` / `.nudge` / `.sleep` / `.terminate` | Watchdog | `rung`, `dry_run`, `detail`, `findings`, `verdict`, `acus_consumed` |
 | `watchdog.held` / `.judged` / `.approval_requested` / `.approved` / `.declined` / `.recovered` | Watchdog | why it held back, the judge's verdict, who approved or declined |
+| `watchdog.manual.message` / `.sleep` / `.terminate` / `.mute` / `.unmute` | Watchdog | `by`, `detail`: a person acting from the dashboard |
 | `watchdog.linked` | Watchdog | `mcp_session`: an MCP log that `link_session` tied to this Devin session |
 
 MCP logs shipped from Devin's session machines are stored as `mcp-<proxy session>.ndjson`,
@@ -89,7 +90,7 @@ cut.
 
 Hashing one serialisation, rather than concatenating fields, means no two
 different entries can produce the same input. Verifying needs only a JSON parser
-and SHA-256, so a log can be checked without Flight Recorder.
+and SHA-256, so a log can be checked without Watchdog.
 
 **Detected:** an edited entry, an edited entry that was re-hashed (caught at the
 next link), a removed or reordered entry, and a line that is not an entry.

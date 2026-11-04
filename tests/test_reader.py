@@ -7,22 +7,22 @@ from pathlib import Path
 
 import pytest
 
-from flight_recorder.chain import Recorder
-from flight_recorder.cli import main
-from flight_recorder.reader import ChainError, entries, follow
+from agent_watchdog.chain import Recorder
+from agent_watchdog.cli import main
+from agent_watchdog.reader import ChainError, entries, follow
 
 
 def _log(path: Path, n: int, session: str = "s1") -> Recorder:
     rec = Recorder(path, session_id=session, agent="test")
     for i in range(n):
-        rec.append("tool.call", flight={"tool": f"t{i}"})
+        rec.append("tool.call", activity={"tool": f"t{i}"})
     return rec
 
 
 def test_entries_yields_every_verified_entry(tmp_path: Path) -> None:
     path = tmp_path / "a.ndjson"
     _log(path, 3).close()
-    assert [e["flight"]["tool"] for e in entries(path)] == ["t0", "t1", "t2"]
+    assert [e["activity"]["tool"] for e in entries(path)] == ["t0", "t1", "t2"]
 
 
 def test_entries_stops_at_a_tampered_entry(tmp_path: Path) -> None:
@@ -32,7 +32,7 @@ def test_entries_stops_at_a_tampered_entry(tmp_path: Path) -> None:
     seen = []
     with pytest.raises(ChainError) as err:
         for entry in entries(path):
-            seen.append(entry["flight"]["tool"])
+            seen.append(entry["activity"]["tool"])
     assert seen == ["t0"]  # nothing past the break is handed to a consumer
     assert err.value.line == 2
 
@@ -45,12 +45,12 @@ def test_follow_picks_up_new_entries_and_new_files(tmp_path: Path) -> None:
     def stop() -> bool:
         step = next(rounds, None)
         if step == 0:
-            first.append("tool.call", flight={"tool": "grew"})
+            first.append("tool.call", activity={"tool": "grew"})
         elif step == 1:
             later.append(_log(tmp_path / "b.ndjson", 1, session="s2"))
         return step is None
 
-    tools = [e["flight"]["tool"] for e in follow(tmp_path, poll=0, stop=stop)]
+    tools = [e["activity"]["tool"] for e in follow(tmp_path, poll=0, stop=stop)]
     first.close()
     later[0].close()
     assert tools == ["t0", "grew", "t0"]

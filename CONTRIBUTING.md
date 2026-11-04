@@ -1,60 +1,55 @@
 # Contributing
 
-Thanks for helping. Flight Recorder is part of the Arboria Foundation's
-tools; the foundation-wide standards for commits, pull requests and review are
-on its contributing page. This file covers what is specific here.
-
 ## Getting set up
 
 ```console
 make setup     # Python 3.11+: .venv with the dev tools
-make check     # ruff, mypy --strict, pytest: what a PR must pass
+make check     # ruff, mypy --strict, pytest: what a change must pass
 make fmt       # format and auto-fix
+.venv/bin/watchdog demo    # the dashboard against a scripted fake, to see a change
 ```
 
 ## The rules that are not negotiable
 
-- **The relay never changes a message.** Any change to `proxy.py` keeps
+- **The proxy never changes a message.** Any change to `proxy.py` keeps
   `test_the_relay_is_byte_for_byte` passing.
-- **The chain format is a contract.** Logs written today must verify with every
+- **The log format is a contract.** Logs written today must verify with every
   later version. Changing what is hashed needs a new format version and a
   migration story, not an edit.
 - **Redaction runs before every write.** New fields that carry agent content go
   through `redact.keep`.
+- **The engine judges only what was recorded.** It reads verified entries from
+  the log, never a platform's API directly.
+- **People decide the irreversible step.** Terminate always waits for approval
+  (or a person pressing *Terminate*).
+- **Secrets are environment variables**, never settings, never logged.
+- **What runs on an agent's machine stays standard-library only**: `proxy`,
+  `tools`, `chain`, `reader`, `redact`.
 - **Every bug fix comes with a test that fails without it.**
-- **The core stays standard-library only.** `chain`, `redact`, `proxy` and
-  `reader` take no third-party imports, and the package has no runtime
-  dependencies.
 
-## Adding a platform importer
+## Adding a setting
 
-Importers bring in what an agent did outside MCP, through a platform's API. They
-live on their own branch (see `devin`), so `main` stays vendor-neutral and
-dependency-free. On that branch, add `src/flight_recorder/importers/<platform>.py`:
+Add a `Field` to `FIELDS` in `settings.py` (key, kind, default, label, help,
+limits). The settings panel and `docs/configuration.md` are generated from that
+list. Read the value with `config.get(key)` where it is used, so a change applies
+without a restart.
 
-- Keep everything the platform's API defines (endpoints, field names) in one
-  client class, so a changed API is a one-file fix.
-- Make it idempotent: record what has been imported, mark it only after the entry
-  is written, and keep that state out of the log directory.
-- Treat every id and string from the API as untrusted: `chain.safe_name` for file
-  names, and percent-encoding for URL paths.
-- Record when each thing happened as `timestamp`; the recorder adds when it was
-  written.
-- Test against a mocked API (`httpx.MockTransport`), including a hostile id and a
-  rejected key, and give the CLI a `--dry-run`.
+## Adding a rule
 
-## Things that will be declined
+Rules are pure functions in `rules.py`: a session view and the time in, a
+`Finding` (or nothing) out, with its evidence and the nudge it would send. Add
+it to `RULES`, give it `rules.<name>.*` settings, and test it with a healthy
+session too.
 
-- **Acting on what is recorded.** Alerting, nudging or stopping agents belongs in
-  a supervisor that reads the log, not in the recorder. A recorder that acts
-  becomes something agents can steer.
-- **Rewriting or filtering traffic.** That is a policy engine. It would make the
-  record differ from what happened.
-- **Sending the log anywhere by default.** No telemetry, and no uploads unless
-  explicitly configured.
-- **Sampling or dropping entries for volume.** A record with gaps is not a
-  record. Cap payload size instead.
+## Adding a platform
+
+Everything a platform's API defines (endpoints, field names) lives in one
+client class, so a changed API is a one-file fix. Importers are idempotent
+(state kept outside the log directory, marked only after an entry is written),
+treat every id from the API as untrusted, and are tested against a fake of the
+API (`httpx.MockTransport`), including a hostile id and a rejected key.
 
 ## Style
 
 Match the code around you. Comments say why, not what. Names are spelled out.
+User-facing text is plain: say what happened and what to do.

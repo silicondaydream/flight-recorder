@@ -8,14 +8,14 @@ from pathlib import Path
 
 import pytest
 
-from flight_recorder.chain import GENESIS, Recorder, canonical, entry_hash, safe_name, verify_file
+from agent_watchdog.chain import GENESIS, Recorder, canonical, entry_hash, safe_name, verify_file
 
 
 def _log(tmp_path: Path, n: int = 4) -> Path:
     path = tmp_path / "session.ndjson"
     with Recorder(path, session_id="s1", agent="test") as rec:
         for i in range(n):
-            rec.append("tool.call", flight={"tool": f"t{i}", "arguments": {"i": i}})
+            rec.append("tool.call", activity={"tool": f"t{i}", "arguments": {"i": i}})
     return path
 
 
@@ -48,7 +48,7 @@ def test_an_edit_that_also_rehashes_the_entry_breaks_the_next_link(tmp_path: Pat
     path = _log(tmp_path)
     lines = _lines(path)
     entry = json.loads(lines[1])
-    entry["flight"]["tool"] = "forged"
+    entry["activity"]["tool"] = "forged"
     entry["chain"]["hash"] = entry_hash(entry)
     lines[1] = json.dumps(entry) + "\n"
     path.write_text("".join(lines), encoding="utf-8")
@@ -120,7 +120,7 @@ def test_the_hash_does_not_depend_on_key_order() -> None:
     assert entry_hash(a) == entry_hash(b)
 
 
-def test_entries_are_ecs_shaped_for_lincoln(tmp_path: Path) -> None:
+def test_entries_are_ecs_shaped(tmp_path: Path) -> None:
     entry = json.loads(_lines(_log(tmp_path))[0])
     assert entry["@timestamp"].endswith("Z")
     assert entry["event"]["action"] == "tool.call"

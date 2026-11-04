@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from flight_recorder.redact import Redactor, capped, keep
+from agent_watchdog.redact import Redactor, capped, keep
 
 # Test-only fakes in each format. None is a real credential.
 SECRETS = {

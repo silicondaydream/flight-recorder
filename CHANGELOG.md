@@ -5,63 +5,47 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added (devin branch)
+## [0.2.0]
 
-- **Watchdog** (`devin_watchdog`, `watchdog` command). A supervisor for Devin
-  sessions that reads only verified log entries. Seven rules: repeated failing
-  commands, repeated errors, edit thrash, test/build loops, ACUs without
-  progress, environment blockers, scope drift. Escalation runs log → Teams alert
-  → nudge → sleep (archive) → terminate (with approval). Guardrails: DRY_RUN by
-  default, cooldowns, a `watchdog:off` tag, no nudges while a session waits on a
-  human, and never messaging a suspended session. Optional LLM judge. Its
-  decisions go to its own hash-chained log. Comes with a live dashboard,
-  `watchdog replay` for tuning against recorded sessions, `watchdog demo`
-  against a scripted fake of the v3 API, and a Dockerfile and compose file.
+### Added
 
-- **Exact commands through MCP.** `watchdog tools`: a shell and editor MCP
-  server for Devin (`run_command` with real exit codes, `edit_file`,
-  `write_file`, `read_file`, `link_session`), run behind `flight-recorder proxy`.
-  It ships the proxy's log from the session machine to Watchdog's new public
-  listener (`POST /api/ingest`), which appends only entries that chain on.
-  `link_session` ties the log to its Devin session, and its findings are then
-  exact. `watchdog mcp-setup` prints the Devin config and Knowledge note.
-- **Approving from Teams.** The approval card has signed, expiring **Approve
-  terminate** and **Keep running** links. They open a confirmation page on the
-  public listener, and only that page's POST acts. There is also `watchdog
-  decline`, a "Keep running" button on the dashboard, and `watchdog run --public`.
-- The demo adds a session driven through a real proxy and `watchdog tools`,
-  which ends in the Teams approval flow.
+- **Settings, applied live.** Every threshold, step and switch is a validated
+  setting, changed from the dashboard's Settings panel, saved to
+  `settings.json` and read on every tick. Flags override settings for one run.
+- **Granular Teams notifications.** A switch for each trigger: each ladder step,
+  approvals and decisions, dashboard actions, recoveries, guardrails, judge
+  vetoes, sessions starting and ending, running long, passing an ACU threshold,
+  waiting on a person, and errors. A per-session and an hourly rate limit, an
+  optional digest, three levels of detail, and a test card.
+- **Session detail view**: an overview with findings, evidence and the nudge
+  each would send; every recorded entry with its raw JSON; the signals the
+  rules use; every decision and what became of its Teams notice.
+- **Manual controls**: send a message, sleep, terminate, mute and unmute a
+  session from the dashboard, recorded like every other decision.
+- **Live log levels**: decisions, notable, or everything the agent does.
+- **Lifecycle notices**: session started, finished, running long, spend
+  threshold, waiting on a person, each once.
+- **Steps can be turned off**, and each rule can be turned off or capped.
+- `demo-target/`: a project an agent cannot finish, for the demo.
+- Docs: architecture, hackathon runbook, configuration, Devin and Teams setup.
 
-### Fixed (devin branch)
+### Changed
 
-- Errors from MCP tool results were reduced to the tool's name; the error line
-  in the result's text is used now.
-
-### Changed (devin branch)
-
-- **The Devin importer uses the v3 organization API** (`/v3/organizations/{org_id}/…`,
-  service-user `cog_` keys, cursor pagination); v1 is deprecated. Polls are
-  incremental (`updated_after` watermark, per-session message cursor). Messages
-  record `from` (`devin`/`user`) instead of `type`. Status changes record
-  `status_detail`. New flags: `--org-id`, `--since-hours`.
+- **One app, Watchdog.** One package (`agent_watchdog`) and one command
+  (`watchdog proxy|tools|run|demo|…`). Log entries keep their content under
+  `activity`; the log directory is `~/.local/share/watchdog`.
+- **The AI judge runs on OpenAI** (a ChatGPT Enterprise or OpenAI platform API
+  key, `OPENAI_API_KEY`), with a strict JSON-schema response. Model, reasoning
+  effort, which steps it is asked about, and an hourly budget are settings.
+- **The dashboard is rebuilt**: plain-language states ("Needs approval",
+  "Waiting on you", "Asleep") and next steps ("Will nudge in 42s"), new colours.
 
 ## [0.1.0]
 
 ### Added
 
-- **Hash-chained log.** One NDJSON file per session, ECS-shaped. Each entry is
-  linked by SHA-256 over its canonical JSON, flushed and fsynced on every write,
-  and created `0600`. A recorder refuses to extend a chain that does not verify.
-- **`flight-recorder proxy`.** A stdio MCP proxy that relays traffic unchanged
-  and records `tools/call` requests (before forwarding them), their results and
-  durations, and both sides' `initialize`. `--strict` never forwards a call it
-  could not record.
-- **Redaction and payload caps.** Built-in secret patterns, sensitive field
-  names and `--redact`, applied before every write. Large payloads are kept as a
-  preview plus size and SHA-256.
-- **`flight-recorder verify` and `tail`**, and `reader.follow()`, a live feed of
-  verified entries from a file or a directory.
-- **`flight-recorder import devin`** (this branch). Devin sessions' messages,
-  status changes and metadata, through the API. Idempotent, with `--watch`,
-  `--tag` and `--dry-run`. State is kept outside the log directory.
-- Docs: the log format, querying with Lincoln, and Devin and supervisors.
+- The MCP proxy, hash-chained logs, redaction, `verify` and `tail`.
+- The Devin v3 importer.
+- The supervisor: seven rules, the escalation ladder with guardrails,
+  approval links for Teams, `watchdog tools` with log shipping and
+  `link_session`, the dashboard, `replay` and the scripted demo.

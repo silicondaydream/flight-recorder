@@ -14,18 +14,19 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from helpers import config
 
-from devin_watchdog.actions import DevinActions, Teams
-from devin_watchdog.dashboard import serve
-from devin_watchdog.engine import Settings, State, Watchdog
-from devin_watchdog.fakedevin import FakeDevin
-from devin_watchdog.judge import Verdict, describe
-from devin_watchdog.observe import NUDGE_MARK, SessionView, read_message
-from devin_watchdog.rules import Finding, Thresholds, evaluate
-from flight_recorder.chain import Recorder, verify_file
-from flight_recorder.importers.devin import DevinClient, Importer
-from flight_recorder.importers.devin import State as ImportState
-from flight_recorder.reader import entries
+from agent_watchdog.actions import DevinActions, Teams
+from agent_watchdog.chain import Recorder, verify_file
+from agent_watchdog.dashboard import serve
+from agent_watchdog.devin import DevinClient, Importer
+from agent_watchdog.devin import State as ImportState
+from agent_watchdog.engine import State, Watchdog
+from agent_watchdog.fakedevin import FakeDevin
+from agent_watchdog.judge import Verdict, describe
+from agent_watchdog.observe import NUDGE_MARK, SessionView, read_message
+from agent_watchdog.reader import entries
+from agent_watchdog.rules import Finding, Thresholds, evaluate
 
 T0 = 1_793_000_000.0
 STUCK = "Running `npm test`. It failed: Error: Cannot find module './gateway'"
@@ -55,12 +56,14 @@ class Session:
     def snapshot(self, at: float, **fields: Any) -> None:
         self.meta.update(fields)
         self.rec.append(
-            "session.snapshot", timestamp=stamp(at), flight={"session": {"value": dict(self.meta)}}
+            "session.snapshot",
+            timestamp=stamp(at),
+            activity={"session": {"value": dict(self.meta)}},
         )
 
     def say(self, at: float, text: str, sender: str = "devin") -> None:
         self.rec.append(
-            "message", timestamp=stamp(at), flight={"from": sender, "text": {"value": text}}
+            "message", timestamp=stamp(at), activity={"from": sender, "text": {"value": text}}
         )
 
 
@@ -110,7 +113,7 @@ def rig(tmp_path: Path) -> Iterator[Any]:
         fake.add("devin-s1")
         log_dir = tmp_path / "logs"
         engine = Watchdog(
-            Settings(**{"dry_run": False, "cooldown": 60.0, **settings}),
+            config(**{"dry_run": False, "cooldown": 60.0, **settings}),
             State(tmp_path / "watchdog.db"),
             devin=DevinActions("cog_t", transport=fake.transport()),
             teams=Teams("https://teams.example/teams", transport=fake.transport()),
@@ -296,7 +299,7 @@ def test_a_suspended_session_is_never_nudged(rig: Any) -> None:
     for t in (20, 90, 160):
         r.at(t)
     assert r.rungs() == [] and r.fake.sent == []
-    assert r.engine.held["devin-s1"] == "session is not running"
+    assert r.engine.held["devin-s1"] == "the session is not running"
 
 
 def test_the_off_tag_stops_everything(rig: Any) -> None:
@@ -317,7 +320,7 @@ def test_waiting_on_a_human_gets_alerts_not_nudges(rig: Any) -> None:
         r.at(t)
     assert r.rungs() == ["log", "alert"]
     assert r.fake.sent == []
-    assert "waiting on a human" in r.engine.held["devin-s1"]
+    assert "waiting on a person" in r.engine.held["devin-s1"]
 
 
 def test_scope_drift_alone_stops_at_a_nudge(rig: Any) -> None:
@@ -375,6 +378,7 @@ def test_the_judge_can_hold_watchdog_back(rig: Any) -> None:
             return Verdict(False, 0.9, "it is reading the logs, slowly")
 
     r.engine.judge = Lenient()
+    r.engine.config.update({"judge.enabled": True, "judge.from_rung": "log"})
     stuck(r, 10)
     r.at(20)
     r.at(30)  # the verdict holds through the cooldown
@@ -392,6 +396,7 @@ def test_the_judges_nudge_is_the_one_sent(rig: Any) -> None:
             return Verdict(True, 0.95, "loop", "Check the module path in tsconfig.")
 
     r.engine.judge = Strict()
+    r.engine.config.update({"judge.enabled": True})
     stuck(r, 10)
     for t in (20, 90, 160):
         r.at(t)
@@ -420,7 +425,7 @@ def test_sessions_from_the_mcp_proxy_get_alerts_only(rig: Any, tmp_path: Path) -
         proxy.append(
             "tool.call",
             timestamp=stamp(T0 + 10 + i),
-            flight={
+            activity={
                 "tool": "shell",
                 "request_id": str(i),
                 "arguments": {"value": {"command": "make"}},
@@ -430,7 +435,7 @@ def test_sessions_from_the_mcp_proxy_get_alerts_only(rig: Any, tmp_path: Path) -
             "tool.result",
             outcome="failure",
             timestamp=stamp(T0 + 10 + i),
-            flight={
+            activity={
                 "tool": "shell",
                 "request_id": str(i),
                 "result": {"value": {"message": "boom"}},
@@ -458,7 +463,7 @@ def test_done_criterion_detect_nudge_sleep_through_the_real_importer(tmp_path: P
         DevinClient("cog_t", transport=fake.transport()), log_dir, ImportState(tmp_path / "i.db")
     )
     engine = Watchdog(
-        Settings(dry_run=False, cooldown=30.0),
+        config(dry_run=False, cooldown=30.0),
         State(tmp_path / "w.db"),
         devin=DevinActions("cog_t", transport=fake.transport()),
         record_dir=log_dir / "watchdog",
@@ -531,7 +536,7 @@ def test_the_dashboard_serves_state_and_guards_approval(rig: Any) -> None:
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node to parse the page's script")
 def test_the_dashboard_script_parses(tmp_path: Path) -> None:
-    page = (Path(__file__).parent.parent / "src/devin_watchdog/dashboard.html").read_text("utf-8")
+    page = (Path(__file__).parent.parent / "src/agent_watchdog/dashboard.html").read_text("utf-8")
     script = tmp_path / "dashboard.js"
     script.write_text(page.split("<script>", 1)[1].split("</script>", 1)[0], encoding="utf-8")
     node = shutil.which("node") or "node"

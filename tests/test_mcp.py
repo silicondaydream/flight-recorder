@@ -16,16 +16,17 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from helpers import config
 
-from devin_watchdog import tools
-from devin_watchdog.actions import DevinActions, Teams
-from devin_watchdog.approvals import Signer
-from devin_watchdog.engine import Settings, State, Watchdog
-from devin_watchdog.fakedevin import FakeDevin
-from devin_watchdog.ingest import IngestStore
-from devin_watchdog.public import serve_public
-from flight_recorder.chain import Recorder, verify_file
-from flight_recorder.reader import entries
+from agent_watchdog import tools
+from agent_watchdog.actions import DevinActions, Teams
+from agent_watchdog.approvals import Signer
+from agent_watchdog.chain import Recorder, verify_file
+from agent_watchdog.engine import State, Watchdog
+from agent_watchdog.fakedevin import FakeDevin
+from agent_watchdog.ingest import IngestStore
+from agent_watchdog.public import serve_public
+from agent_watchdog.reader import entries
 
 T0 = 1_793_000_000.0
 HEX = "5f0c1e2a9b7d4c6e8a1f3b2d"
@@ -91,8 +92,8 @@ def test_the_real_proxy_records_exact_outcomes(tmp_path: Path) -> None:
     logs = tmp_path / "logs"
     proc = subprocess.Popen(
         [
-            sys.executable, "-m", "flight_recorder.cli", "proxy", "--log-dir", str(logs),
-            "--name", "watchdog-tools", "--", sys.executable, "-m", "devin_watchdog.cli", "tools",
+            sys.executable, "-m", "agent_watchdog.cli", "proxy", "--log-dir", str(logs),
+            "--name", "watchdog-tools", "--", sys.executable, "-m", "agent_watchdog.cli", "tools",
         ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -117,7 +118,7 @@ def test_the_real_proxy_records_exact_outcomes(tmp_path: Path) -> None:
     proc.wait(timeout=10)
     proc.stdout.close()
     results = [e for e in entries(logs) if e["event"]["action"] == "tool.result"]
-    assert [(e["flight"]["tool"], e["event"]["outcome"]) for e in results] == [
+    assert [(e["activity"]["tool"], e["event"]["outcome"]) for e in results] == [
         ("link_session", "success"),
         ("run_command", "failure"),
     ]
@@ -129,7 +130,7 @@ def test_the_real_proxy_records_exact_outcomes(tmp_path: Path) -> None:
 def _proxy_log(path: Path, n: int, sid: str = "mcp-1") -> list[dict[str, Any]]:
     rec = Recorder(path, session_id=sid, agent="mcp-proxy")
     for i in range(n):
-        rec.append("tool.call", flight={"tool": "run_command", "request_id": str(i)})
+        rec.append("tool.call", activity={"tool": "run_command", "request_id": str(i)})
     rec.close()
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
@@ -149,7 +150,7 @@ def test_ingest_appends_the_chain_skips_resends_and_refuses_gaps(tmp_path: Path)
 
 def test_ingest_refuses_an_altered_entry(tmp_path: Path) -> None:
     sent = _proxy_log(tmp_path / "vm.ndjson", 2)
-    sent[1]["flight"]["tool"] = "something_else"
+    sent[1]["activity"]["tool"] = "something_else"
     store = IngestStore(tmp_path / "logs")
     result = store.add(sent)
     assert result.accepted == 1 and "contents changed" in result.error
@@ -170,7 +171,7 @@ def public(tmp_path: Path) -> Iterator[tuple[str, Watchdog, FakeDevin, Signer]]:
     fake.add(SID, title="Fix the API client")
     signer = Signer("k3y", "https://watchdog.example")
     engine = Watchdog(
-        Settings(dry_run=False),
+        config(dry_run=False),
         State(tmp_path / "w.db"),
         devin=DevinActions("cog_t", transport=fake.transport()),
         teams=Teams("https://teams.example/teams", transport=fake.transport()),
@@ -272,13 +273,15 @@ def test_the_shipper_delivers_a_growing_log_and_survives_a_restart(
     vm = tmp_path / "vm"
     vm.mkdir()
     rec = Recorder(vm / "a.ndjson", session_id="mcp-7", agent="mcp-proxy")
-    rec.append("tool.call", flight={"tool": "run_command", "request_id": "1"})
+    rec.append("tool.call", activity={"tool": "run_command", "request_id": "1"})
     shipper = tools.Shipper(vm, f"{base}/api/ingest", "ingest-t", poll=0.05).start()
-    rec.append("tool.result", outcome="failure", flight={"tool": "run_command", "request_id": "1"})
+    rec.append(
+        "tool.result", outcome="failure", activity={"tool": "run_command", "request_id": "1"}
+    )
     shipped = tmp_path / "logs" / "mcp-mcp-7.ndjson"
     _wait(lambda: shipped.exists() and verify_file(shipped).entries == 2)
     shipper.close()
-    rec.append("tool.call", flight={"tool": "run_command", "request_id": "2"})
+    rec.append("tool.call", activity={"tool": "run_command", "request_id": "2"})
     rec.close()
     again = tools.Shipper(vm, f"{base}/api/ingest", "ingest-t", poll=0.05).start()  # from the top
     _wait(lambda: verify_file(shipped).entries == 3)
@@ -318,7 +321,7 @@ def _devin_log(log_dir: Path) -> Recorder:
         "acus_consumed": 1.0,
         "pull_requests": [],
     }
-    rec.append("session.snapshot", timestamp=stamp(T0), flight={"session": {"value": meta}})
+    rec.append("session.snapshot", timestamp=stamp(T0), activity={"session": {"value": meta}})
     return rec
 
 
@@ -345,20 +348,20 @@ def _mcp_log(log_dir: Path, name: str, *, link: bool, failures: int, start: floa
         rec.append(
             "tool.call",
             timestamp=at,
-            flight={"tool": tool, "request_id": "1", "arguments": {"value": args}},
+            activity={"tool": tool, "request_id": "1", "arguments": {"value": args}},
         )
         rec.append(
             "tool.result",
             outcome=outcome,
             timestamp=at,
-            flight={"tool": tool, "request_id": "1", "result": {"value": result}},
+            activity={"tool": tool, "request_id": "1", "result": {"value": result}},
         )
     rec.close()
 
 
 def _engine(tmp_path: Path, clock: Clock, fake: FakeDevin, **kw: Any) -> Watchdog:
     return Watchdog(
-        Settings(dry_run=False, cooldown=60.0),
+        config(dry_run=False, cooldown=60.0),
         State(tmp_path / "w.db"),
         devin=DevinActions("cog_t", transport=fake.transport()),
         teams=Teams("https://teams.example/teams", transport=fake.transport()),
@@ -467,14 +470,14 @@ def test_a_database_from_before_declining_is_upgraded(tmp_path: Path) -> None:
 
 
 def test_the_demo_runs_the_mcp_session_end_to_end(tmp_path: Path) -> None:
-    from devin_watchdog import demo
+    from agent_watchdog import demo
 
     fake = FakeDevin()
     demo.Scenario(fake)
     store_dir = tmp_path / "logs"
-    from devin_watchdog.public import serve_public as serve
+    from agent_watchdog.public import serve_public as serve
 
-    engine = Watchdog(Settings(), State(tmp_path / "w.db"))
+    engine = Watchdog(config(), State(tmp_path / "w.db"))
     server = serve(engine, IngestStore(store_dir), None, "127.0.0.1", 0, ingest_token="t")
     agent = demo.McpAgent(
         tmp_path, f"http://127.0.0.1:{server.server_address[1]}/api/ingest", "t", fake
@@ -488,6 +491,6 @@ def test_the_demo_runs_the_mcp_session_end_to_end(tmp_path: Path) -> None:
     shipped = list(store_dir.glob("mcp-*.ndjson"))
     assert len(shipped) == 1 and verify_file(shipped[0]).valid
     tools_called = [
-        e["flight"]["tool"] for e in entries(shipped[0]) if e["event"]["action"] == "tool.call"
+        e["activity"]["tool"] for e in entries(shipped[0]) if e["event"]["action"] == "tool.call"
     ]
     assert tools_called == ["link_session", "write_file", "run_command"]

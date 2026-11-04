@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from flight_recorder.chain import verify_file
+from agent_watchdog.chain import verify_file
 
 FAKE = str(Path(__file__).with_name("fake_server.py"))
 
@@ -46,7 +46,7 @@ def _run(
         [
             sys.executable,
             "-m",
-            "flight_recorder.cli",
+            "agent_watchdog.cli",
             "proxy",
             "--log-dir",
             str(log_dir),
@@ -92,24 +92,24 @@ def test_calls_and_results_are_paired_and_the_log_verifies(tmp_path: Path) -> No
         ["session.initialize", "session.initialized"] + ["tool.call", "tool.result"] * 3
     )
     seq = {
-        (e["event"]["action"], e["flight"].get("request_id")): e["event"]["sequence"]
+        (e["event"]["action"], e["activity"].get("request_id")): e["event"]["sequence"]
         for e in entries
     }
     for rid in ("2", '"a"', "3"):
         assert seq[("tool.call", rid)] < seq[("tool.result", rid)]
     results = [e for e in entries if e["event"]["action"] == "tool.result"]
-    assert [r["flight"]["tool"] for r in results] == ["echo", "fail", "tool_error"]
+    assert [r["activity"]["tool"] for r in results] == ["echo", "fail", "tool_error"]
     assert [r["event"]["outcome"] for r in results] == ["success", "failure", "failure"]
     assert all(r["event"]["duration"] >= 0 for r in results)
-    echo = results[0]["flight"]["result"]["value"]
+    echo = results[0]["activity"]["result"]["value"]
     assert echo["content"][0]["text"] == "hello"
 
 
 def test_initialize_records_both_sides(tmp_path: Path) -> None:
     _, log = _run(tmp_path, SESSION)
     entries = {e["event"]["action"]: e for e in _entries(log)}
-    assert entries["session.initialize"]["flight"]["client"]["name"] == "test-client"
-    assert entries["session.initialized"]["flight"]["server_info"]["name"] == "fake"
+    assert entries["session.initialize"]["activity"]["client"]["name"] == "test-client"
+    assert entries["session.initialized"]["activity"]["server_info"]["name"] == "fake"
 
 
 def test_ids_of_different_types_are_not_confused(tmp_path: Path) -> None:
@@ -118,7 +118,7 @@ def test_ids_of_different_types_are_not_confused(tmp_path: Path) -> None:
     )
     _, log = _run(tmp_path, stdin)
     results = [e for e in _entries(log) if e["event"]["action"] == "tool.result"]
-    assert {(r["flight"]["request_id"], r["flight"]["tool"]) for r in results} == {
+    assert {(r["activity"]["request_id"], r["activity"]["tool"]) for r in results} == {
         ("1", "echo"),
         ('"1"', "fail"),
     }
@@ -129,7 +129,7 @@ def test_a_line_that_is_not_json_is_relayed_and_noted(tmp_path: Path) -> None:
     assert b"this is not json\n" in proc.stdout
     entries = _entries(log)
     errors = [e for e in entries if e["event"]["action"] == "recorder.error"]
-    assert len(errors) == 1 and errors[0]["flight"]["side"] == "server"
+    assert len(errors) == 1 and errors[0]["activity"]["side"] == "server"
     assert verify_file(log).valid
 
 
@@ -145,7 +145,7 @@ def test_a_big_result_is_kept_as_a_preview(tmp_path: Path) -> None:
         tmp_path, _req(7, "tools/call", name="big", arguments={"n": 5000}), "--max-payload", "256"
     )
     result = next(e for e in _entries(log) if e["event"]["action"] == "tool.result")
-    kept = result["flight"]["result"]
+    kept = result["activity"]["result"]
     assert kept["truncated"] is True and kept["bytes"] > 5000
 
 
@@ -154,7 +154,7 @@ def test_the_servers_exit_code_is_returned_and_recorded(tmp_path: Path) -> None:
     assert proc.returncode == 3
     end = _entries(log)[-1]
     assert end["event"]["action"] == "session.end"
-    assert end["event"]["outcome"] == "failure" and end["flight"]["exit_code"] == 3
+    assert end["event"]["outcome"] == "failure" and end["activity"]["exit_code"] == 3
 
 
 def test_a_call_left_unanswered_is_named_at_the_end(tmp_path: Path) -> None:
@@ -162,7 +162,7 @@ def test_a_call_left_unanswered_is_named_at_the_end(tmp_path: Path) -> None:
         10, "tools/call", name="echo", arguments={"text": "ok"}
     )
     _, log = _run(tmp_path, stdin)
-    assert _entries(log)[-1]["flight"]["unanswered"] == ["hang"]
+    assert _entries(log)[-1]["activity"]["unanswered"] == ["hang"]
 
 
 def test_a_server_that_cannot_start_is_recorded(tmp_path: Path) -> None:
@@ -171,7 +171,7 @@ def test_a_server_that_cannot_start_is_recorded(tmp_path: Path) -> None:
         [
             sys.executable,
             "-m",
-            "flight_recorder.cli",
+            "agent_watchdog.cli",
             "proxy",
             "--log-dir",
             str(log_dir),
@@ -191,7 +191,7 @@ def test_a_server_that_cannot_start_is_recorded(tmp_path: Path) -> None:
 
 def test_without_a_command_it_says_so(tmp_path: Path) -> None:
     proc = subprocess.run(
-        [sys.executable, "-m", "flight_recorder.cli", "proxy", "--log-dir", str(tmp_path)],
+        [sys.executable, "-m", "agent_watchdog.cli", "proxy", "--log-dir", str(tmp_path)],
         capture_output=True,
         timeout=30,
         check=False,
@@ -205,14 +205,14 @@ class _BrokenRecorder:
 
 
 def _proxy(strict: bool) -> Any:
-    from flight_recorder.proxy import Options, Proxy
+    from agent_watchdog.proxy import Options, Proxy
 
     options = Options(command=["x"], log_dir=Path("."), name="x", session_id="s", strict=strict)
     return Proxy(options, _BrokenRecorder())  # type: ignore[arg-type]
 
 
 def test_strict_refuses_to_forward_a_call_it_could_not_record() -> None:
-    from flight_recorder.proxy import _StrictError
+    from agent_watchdog.proxy import _StrictError
 
     proxy = _proxy(strict=True)
     try:

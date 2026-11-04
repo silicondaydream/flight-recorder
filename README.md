@@ -1,158 +1,167 @@
-# Flight Recorder
+# Watchdog
 
-> **This is the `devin` branch.** It adds the Devin v3 API importer and
-> **Watchdog**, a supervisor that notices stuck or drifting Devin sessions and
-> escalates: log → Teams alert → nudge → sleep → terminate (with approval).
-> Try it with no keys: `make setup && .venv/bin/watchdog demo`, then open
-> http://127.0.0.1:8765. See [docs/watchdog.md](docs/watchdog.md).
->
-> ![Watchdog dashboard](docs/img/watchdog-dashboard.png)
+**Watchdog watches AI coding-agent sessions and steps in when one goes wrong.**
+It records what each session does (every message, every tool call and its
+result) and notices when a session is stuck in a loop, burning credits without
+progress, blocked, or drifting off its task. Then it acts, one step at a time:
+it alerts your Teams channel, nudges the agent, puts the session to sleep, and,
+with a person's approval, terminates it.
 
-A tamper-evident record of what an AI agent actually did. Put it between an
-agent and its MCP servers, and every tool call and result goes into a
-hash-chained log that shows if anyone edits it afterwards.
+It is built for [Devin](https://devin.ai) sessions, and it works as an **MCP
+proxy**, so it sees the agent's tool use exactly rather than guessing.
+
+![The Watchdog dashboard](docs/img/watchdog-dashboard.png)
+
+## What is an MCP proxy?
+
+The [Model Context Protocol](https://modelcontextprotocol.io) (MCP) is how AI
+agents call tools: the agent (the *client*) sends a JSON-RPC request such as
+`tools/call run_command {"command": "npm test"}` to an *MCP server*, which runs
+it and answers with the result.
+
+An **MCP proxy** sits on that line. The agent starts the proxy where it would
+have started the server; the proxy starts the real server and relays every
+message both ways, unchanged. Neither side can tell it is there, but the proxy
+sees every call and every answer:
+
+```
+ without a proxy        agent ───────────────────────────▶ MCP server
+
+ with Watchdog          agent ──▶ watchdog proxy ──▶ MCP server
+                                       │
+                                       ▼
+                              tamper-evident log
+                     (each tool call, its arguments, result,
+                      outcome and duration, secrets removed)
+```
+
+That is how Watchdog knows, for example, that `python3 -m unittest` failed with
+exit code 1 eleven times in a row, rather than inferring it from what the agent
+says about itself.
+
+## How Watchdog works
+
+```
+   ┌──────────────── Devin session machine ─────────────────┐
+   │  Devin ──▶ watchdog proxy ──▶ watchdog tools            │      Devin's API (v3)
+   │            (records)          (run_command, edit_file…)  │      sessions, messages,
+   └───────────────┬──────────────────────────────────────────┘      status, ACUs
+                   │ ships each verified log entry                         │
+                   ▼  POST /api/ingest                                    │ polled
+   ┌──────────────────────────────── Watchdog ────────────────────────────▼─────┐
+   │                                                                            │
+   │   hash-chained session logs  ◀── importer                                   │
+   │            │ verified entries only                                         │
+   │            ▼                                                               │
+   │   session views ──▶ 7 rules ──▶ findings ──▶ (optional AI judge)           │
+   │                                    │                                       │
+   │                     escalation ladder + guardrails ──▶ Watchdog's own log  │
+   │                                    │                                       │
+   │      dashboard (live log, session detail, settings)    notifier ──▶ Teams   │
+   └────────────────────────────────────┼──────────────────────────────────────┘
+                                         ▼
+                      nudge · sleep · terminate (Devin API)
+```
+
+1. **Record.** Devin's tool calls go through the proxy; Devin's chat, status
+   and credit use come from its API. Everything lands in append-only logs where
+   each entry carries the hash of the one before it, so an edited or removed
+   entry is detected.
+2. **Judge.** Seven rules run every couple of seconds over what was recorded:
+   repeated failing commands, repeated errors, edit thrash, test/build loops,
+   ACUs spent without progress, environment blockers and scope drift. An
+   optional AI judge (an OpenAI model) can overrule them before each step.
+3. **Act.** A stuck session climbs a ladder, one step per cooldown:
+
+   | Step | What happens |
+   |---|---|
+   | Log | Recorded, on the dashboard |
+   | Alert | A card in the Teams channel |
+   | Nudge | A message to the agent: what it is doing wrong, what to try |
+   | Sleep | The session is put to sleep, so it stops spending |
+   | Terminate | Only after a person approves, from Teams or the dashboard |
+
+   Guardrails come first: no nudges while a session is waiting on a person, no
+   messages to a sleeping session (it would wake it), an opt-out tag, a mute
+   button, cooldowns, and a dry-run mode that decides but sends nothing.
+
+Full detail, with design choices and the security model:
+[docs/architecture.md](docs/architecture.md).
+
+## Try it in two minutes, no keys needed
 
 ```console
-$ flight-recorder tail ~/.local/share/flight-recorder
-2026-10-28T23:42:58.084Z  #1  session.start
-2026-10-28T23:42:58.117Z  #2  session.initialize
-2026-10-28T23:42:58.119Z  #3  tool.call  echo
-2026-10-28T23:42:58.119Z  #4  tool.call  fail
-2026-10-28T23:42:58.147Z  #8  tool.result  echo  success  29ms
-2026-10-28T23:42:58.148Z  #9  tool.result  fail  failure  29ms
-2026-10-28T23:42:58.153Z  #12  session.end  success
-
-$ flight-recorder verify ~/.local/share/flight-recorder
-ok      …/20261028T234258Z-demo-8a3978ab.ndjson  12 entries  head 9fb2a6b7…
+make setup                       # Python 3.11+
+.venv/bin/watchdog demo          # then open http://127.0.0.1:8765
 ```
 
-Change one byte of a recorded entry and `verify` names the line, and every
-entry after it fails too.
+The demo runs the real pipeline against a scripted stand-in for Devin's API: six
+sessions, one stuck in a loop, one healthy, one waiting on a person, one opted
+out, one drifting off task, and one driven through a real proxy and tools
+server. Within two minutes the stuck sessions are nudged, put to sleep, and one
+asks for approval to terminate.
 
-## Why
-
-Agents act on their own: they run commands, call APIs, edit files. Afterwards,
-"what did it actually do?" is hard to answer. The transcript is the agent's own
-account, a platform's dashboard can't be queried alongside your other logs, and
-nothing shows whether either was edited. Flight Recorder keeps its own record,
-outside the agent:
-
-- **Generic.** Any MCP client that starts stdio servers works: Claude Code,
-  Cursor, agent platforms that launch custom servers by command, your own. No
-  vendor is assumed.
-- **Tamper-evident.** Each entry carries the hash of the one before it. Edits,
-  removals and reordering are caught.
-- **Safe to keep.** Secrets are redacted before anything is written, large
-  payloads are capped visibly, and files are `0600`.
-- **Queryable.** Entries are ECS-shaped JSON lines. [Lincoln](https://github.com/silicondaydream/lincoln)
-  ingests them with no configuration, and so will anything else that reads
-  NDJSON.
-- **A feed for supervisors.** `tail --follow` and `reader.follow()` yield only
-  verified entries, so a supervisor never acts on a forged one.
-
-## Install
+## Run it on your organization
 
 ```console
-git clone <this repository> && cd flight-recorder
-make setup            # Python 3.11+: venv + pip install -e ".[dev]"
-make check            # ruff, mypy --strict, tests
+export DEVIN_API_KEY=cog_…                # a Devin service-user key
+export TEAMS_WEBHOOK_URL=https://…        # a Teams Workflows webhook (optional)
+export OPENAI_API_KEY=sk-…                # for the AI judge (optional)
+.venv/bin/watchdog run                    # starts in dry run; dashboard on :8765
 ```
 
-The core uses only the Python standard library. This branch adds `httpx`, for the
-Devin importer and Watchdog.
+Everything else (how often to check Devin, every rule's threshold, which steps
+are on, what reaches Teams and how often, the live log's detail) is a setting,
+changed from the dashboard's **Settings** panel and applied within seconds.
 
-## Record an MCP server
-
-Put `flight-recorder proxy --` in front of the server's command in your MCP
-client's configuration. For example, in Claude Code's or Cursor's `mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "github": {
-      "command": "flight-recorder",
-      "args": ["proxy", "--name", "github", "--", "npx", "-y", "@modelcontextprotocol/server-github"],
-      "env": { "GITHUB_TOKEN": "…" }
-    }
-  }
-}
-```
-
-Any client that launches a server from a command and arguments takes the same
-form, including hosted agent platforms that configure custom MCP servers by
-command.
-
-The proxy relays the JSON-RPC stream unchanged and writes one log per session to
-`$FLIGHT_RECORDER_DIR` (default `~/.local/share/flight-recorder`). Every
-`tools/call` is written to the log *before* it is forwarded. With `--strict`, a
-call that cannot be written is never forwarded and the session stops, so no tool
-runs without its record.
-
-| Option | |
+| Guide | For |
 |---|---|
-| `--name` | Label for the server in the log |
-| `--log-dir` | Where logs go |
-| `--max-payload BYTES` | Larger arguments and results are kept as a preview plus size and SHA-256 (default 64 KB) |
-| `--redact REGEX` | Redact more than the built-in secret patterns (repeatable) |
-| `--strict` | Stop rather than forward a call that could not be recorded |
+| [docs/hackathon.md](docs/hackathon.md) | The day-of runbook: checklist, demo script, fallbacks |
+| [docs/devin.md](docs/devin.md) | Setting up Devin: service user, MCP server, Knowledge note |
+| [docs/teams.md](docs/teams.md) | The Teams webhook, notification settings, approving from Teams |
+| [docs/configuration.md](docs/configuration.md) | Every setting and environment variable |
+| [docs/architecture.md](docs/architecture.md) | How it works, design choices, security |
+| [docs/format.md](docs/format.md) | The log format and how to verify a log |
+| [demo-target/](demo-target/) | The repository a demo session gets stuck on |
 
-## Import Devin sessions
+## Commands
 
-> This is the `devin` branch: `main` plus a Devin importer. `main` stays
-> vendor-neutral; merge `main` into this branch to pick up core changes.
+| Command | Does |
+|---|---|
+| `watchdog run` | Watch an organization, with the dashboard |
+| `watchdog demo` | The whole thing against a scripted fake, no keys |
+| `watchdog proxy -- <server command>` | Record an MCP server (put it in an MCP client's config) |
+| `watchdog tools` | The shell and editor MCP server Devin uses through the proxy |
+| `watchdog mcp-setup <public url>` | Print what to paste into Devin |
+| `watchdog approve <session>` / `decline` | Decide a pending terminate |
+| `watchdog replay <logs>` | Run the rules over recorded sessions, acting on nothing |
+| `watchdog verify <logs>` / `tail -f` | Check logs have not been altered / follow them live |
+| `watchdog import devin --dry-run` | Check the Devin API connection |
 
-Devin runs its own shell and editor, outside MCP, so its sessions come in
-through the API:
+## Repository layout
 
-```console
-export DEVIN_API_KEY=…
-flight-recorder import devin --dry-run          # what would be recorded
-flight-recorder import devin                    # one log per session
-flight-recorder import devin --watch --interval 60 --tag team-a
+```
+src/agent_watchdog/
+  proxy.py tools.py           the MCP proxy, and the tools server Devin uses
+  chain.py reader.py redact.py   the hash-chained log, verified reading, secret redaction
+  devin.py actions.py         Devin's API: reading sessions, and nudge/sleep/terminate
+  ingest.py public.py         receiving logs from Devin's machines; approval pages
+  observe.py rules.py         from log entries to signals, and the seven rules
+  engine.py settings.py       the ladder and guardrails; every setting
+  notify.py judge.py          what reaches Teams; the optional AI judge
+  dashboard.py dashboard.html the dashboard
+  cli.py runner.py demo.py    the commands, the threads, the scripted demo
+demo-target/                  a project an agent cannot finish (for the demo)
+tests/
 ```
 
-Messages, status changes and session metadata are recorded, and repeated runs add
-only what is new. See [docs/devin.md](docs/devin.md), including how this feeds an
-agent supervisor such as Watchdog.
-
-## Read, verify, query
+## Development
 
 ```console
-flight-recorder verify <file|dir>        # exit 1 if any log was altered
-flight-recorder verify --head <file>     # the head hash, to anchor elsewhere
-flight-recorder tail -f --json <dir>     # verified entries, live
-lincoln ingest <dir>                     # then query with LQL or SQL
+make check     # ruff, mypy --strict, all tests
+make fmt       # format and auto-fix
 ```
 
-```console
-$ lincoln query 'event.action = "tool.result" | stats count() as calls by flight.tool, event.outcome | sort -calls'
-flight.tool  event.outcome  calls
-───────────  ─────────────  ─────
-echo         success        2
-fail         failure        2
-```
-
-More queries are in [docs/lincoln.md](docs/lincoln.md). The entry format is in
-[docs/format.md](docs/format.md).
-
-## What it does not do
-
-- **It is not a sandbox.** It records what the agent did. Use permissions and
-  sandboxing to limit what it can do.
-- **A deleted tail is not detected on its own.** A shorter chain is still a
-  valid chain. Anchor `verify --head` somewhere the agent cannot write.
-- **Redaction is pattern-based.** It catches common token formats and named
-  fields, not every secret.
-- **Only stdio MCP servers, for now.** Streamable HTTP servers are next.
-- **The Devin importer was written against the v1 API without access to its
-  live docs.** Check it with `--dry-run` on your organisation first.
-
-## Status
-
-**v0.1, early and working.** `make check` passes (ruff, `mypy --strict`, 67
-tests). The tests run real child processes and cover tampering, redaction
-and relay fidelity, and the Devin importer against a mocked API.
-
-## License
-
-MIT.
+The proxy, the log and the tools server use only the Python standard library,
+so they run on any machine with Python. See [CONTRIBUTING.md](CONTRIBUTING.md)
+and [SECURITY.md](SECURITY.md).

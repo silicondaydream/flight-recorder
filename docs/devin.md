@@ -1,80 +1,116 @@
-# Devin
+# Setting up Devin
 
-Devin works in its own environment: a shell, an editor, a browser. Those
-actions never pass through an MCP proxy. Flight Recorder covers Devin in two
-ways:
+Watchdog reads Devin sessions in two ways, and you set up both:
 
-1. **MCP servers you give Devin.** Configure each custom MCP server with
-   `flight-recorder proxy --name <name> -- <command>` as the command. Every call
-   Devin makes to that server is recorded live, like any other client.
-2. **Everything else, through the API.** `flight-recorder import devin` reads
-   sessions through Devin's v3 REST API and records their messages, status
-   changes and metadata.
+1. **Devin's API**, for every session in the organization: messages, status,
+   credit use, PRs and tags. This needs only a service-user key.
+2. **The `watchdog-tools` MCP server**, for exact tool use: every command Devin
+   runs through it, with its exit code, and every edit. This runs on Devin's
+   session machine, behind Watchdog's proxy.
 
-## Importing
+Without (2), Watchdog still works, but it reads commands and errors out of what
+Devin says, and marks those findings "from messages".
 
-```console
-export DEVIN_API_KEY=cog_…                   # a service-user key; environment only, never a flag
-export DEVIN_ORG_ID=org-…                    # optional: otherwise read from GET /v3/self
-flight-recorder import devin --dry-run       # check first: prints what it would record
-flight-recorder import devin                 # one pass
-flight-recorder import devin --watch --interval 60
-flight-recorder import devin --tag team-a    # only sessions with this tag
-flight-recorder import devin --since-hours 0 # first run: every session, not the last 24 h
+## 1. A service user
+
+1. Devin → **Settings → Devin API → Service users → Provision service user**.
+2. Name it `Watchdog`. Choose the **Admin** role. A Member can manage sessions,
+   but Devin's docs do not say whether a Member key sees sessions other people
+   started; Admin does.
+3. Copy the key (`cog_…`). It is shown once. It goes in `DEVIN_API_KEY` on the
+   machine that runs Watchdog, never in a flag or a file in the repository.
+4. Optional: the organization id is at the top of the same page (`DEVIN_ORG_ID`).
+   Without it, Watchdog asks the API which organization the key belongs to.
+
+Check it:
+
+```bash
+DEVIN_API_KEY=cog_... .venv/bin/watchdog import devin --dry-run
 ```
 
-The key needs the `ViewOrgSessions` permission. Each session gets
-`<session id>.ndjson` (Devin's ids start `devin-`) in the log directory,
-extended on every pass. A state database remembers each session's status,
-snapshot and message cursor, and the newest `updated_at` seen. A restart or a
-repeated run adds only what is new, and a poll lists only sessions updated since
-the last one. The database is SQLite, at
-`~/.local/state/flight-recorder/devin-state.db`, kept out of the log directory so
-that ingesting the logs never reads it.
+It prints the sessions and messages it would record, and writes nothing.
 
-| Recorded | When | `flight` holds |
-|---|---|---|
-| `session.snapshot` | The session's metadata changed | `session`: the whole SessionResponse: `acus_consumed`, `pull_requests`, `tags`, `status`, `status_detail`, `title`, `url`… |
-| `message` | Each new message, at the time it was sent | `from` (`devin` or `user`), `origin`, `username`, `event_id`, `text` |
-| `session.status` | `status` or `status_detail` changed | `status`, `status_detail`, `previous_status`, `previous_status_detail` |
+## 2. The MCP server
 
-## The API it uses
+Print everything to paste, with your public URL filled in:
+
+```bash
+.venv/bin/watchdog mcp-setup https://<your public url> --repo <git URL of the Watchdog repo>
+```
+
+It gives you three things:
+
+1. **Install Watchdog on the session machine.** In Devin's environment or
+   blueprint setup, add:
+   ```bash
+   pip install 'git+<git URL of the Watchdog repo>'
+   ```
+   If the repository is private, Devin's machine needs read access to it (the
+   same Bitbucket/GitHub connection Devin uses for repositories).
+2. **A custom MCP server.** Devin → **Customize → MCPs → add a custom server →
+   STDIO**:
+   - Command: `watchdog`
+   - Arguments: `proxy --name watchdog-tools -- watchdog tools`
+   - Environment variables:
+     - `WATCHDOG_INGEST_URL` = `https://<your public url>/api/ingest`
+     - `WATCHDOG_INGEST_TOKEN` = the same value as on the Watchdog machine.
+       Prefer storing it as a Devin secret and referencing it; for a one-off
+       demo, pasting the value works.
+3. **A Knowledge note**, so Devin uses the tools:
+   ```text
+   Watchdog tools (MCP server "watchdog-tools"):
+   - At the start of every session, before anything else, call `link_session` with this
+     session's link (https://app.devin.ai/sessions/...).
+   - Run every test, build, install, lint and other shell command with `run_command`.
+   - Make file changes with `edit_file` or `write_file`.
+   These calls are recorded so that a supervisor can tell when a session is stuck.
+   ```
+
+### Why `link_session`?
+
+The MCP server runs on the session machine, and Devin does not tell an MCP
+server which session it is serving. So Devin says so itself, once: the call is
+recorded like any other, and when Watchdog reads it, it folds that MCP log into
+the Devin session. Until then, the MCP log is a separate session on the
+dashboard that only ever gets alerts.
+
+### Check it
+
+Start a session and ask Devin to "call link_session, then run `echo hello`
+with run_command". Within one poll the session's card shows **Exact (MCP)**,
+and its **Activity** tab shows the `tool.call` and `tool.result` entries.
+
+If not:
+
+- Look for MCP errors in the session. Is `watchdog` on the machine's PATH after
+  the install step?
+- Is `WATCHDOG_INGEST_URL` reachable from Devin's machine? A quick tunnel's URL
+  changes every time it starts.
+- Does the ingest token match on both sides?
+
+## What Watchdog does to a session
+
+All through the v3 organization API, with the service user's key:
+
+| Step | Call |
+|---|---|
+| Nudge, or *Send message* from the dashboard | `POST /v3/organizations/{org}/sessions/{id}/messages`, text starting `[Watchdog]` |
+| Sleep | `POST …/sessions/{id}/archive` ("archive session and put it to sleep if currently running"), then tag `watchdog:slept` |
+| Terminate | `DELETE …/sessions/{id}`, only after a person approves (or presses *Terminate* in the dashboard) |
+
+Watchdog never messages a suspended session, because Devin wakes a session to
+deliver a message. To keep a session out of Watchdog's hands, give it the tag
+`watchdog:off` (the tag is a setting), or press **Mute** on its detail page.
+
+## The API it reads
 
 Written against Devin's published v3 OpenAPI spec (`docs.devin.ai/v3-openapi.json`).
-v1 and v2 are deprecated.
 
-| Call | Used for |
+| Call | For |
 |---|---|
-| `GET /v3/self` | the key's `org_id`, when none is given |
-| `GET /v3/organizations/{org_id}/sessions?first&after&updated_after&tags` | sessions, cursor-paged (`items`, `end_cursor`, `has_next_page`) |
-| `GET /v3/organizations/{org_id}/sessions/{devin_id}/messages?first&after` | messages, oldest first, cursor-paged |
+| `GET /v3/self` | the key's organization, when `DEVIN_ORG_ID` is not set |
+| `GET /v3/organizations/{org}/sessions?first&after&updated_after&tags` | sessions changed since the last poll, cursor-paged |
+| `GET /v3/organizations/{org}/sessions/{id}/messages?first&after` | new messages, from a per-session cursor |
 
-Timestamps are Unix epochs; the importer writes them as RFC 3339. Every endpoint
-and field name is in `DevinClient`, `_message_key` and `_status` in
-`src/flight_recorder/importers/devin.py`. Watchdog's write calls are in
-`src/devin_watchdog/actions.py`.
-
-**What the API does not expose:** the shell commands, file edits and tool calls
-a session made. Only messages, status and usage. The `insights` endpoints add an
-AI-written analysis (`issues`, `timeline`), but it is generated after the fact,
-not live.
-
-## Feeding a supervisor
-
-Watchdog, on this branch, is the supervisor these logs were built for. See
-[watchdog.md](watchdog.md). To write your own:
-
-```python
-from pathlib import Path
-from flight_recorder.reader import follow
-
-for entry in follow(Path("~/.local/share/flight-recorder").expanduser()):
-    # Every entry here has already been verified against the chain.
-    session = entry["session"]["id"]
-    action = entry["event"]["action"]
-    ...
-```
-
-The supervisor keeps its own state, alerts and actions. Flight Recorder only
-records. That way the record stays trustworthy whatever the supervisor does, and
-the supervisor's actions can be recorded too.
+Every endpoint and field name lives in `DevinClient` (`src/agent_watchdog/devin.py`)
+and `DevinActions` (`actions.py`), so a change in Devin's API is a one-file fix.

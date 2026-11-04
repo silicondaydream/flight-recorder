@@ -9,10 +9,10 @@ from typing import Any
 
 import pytest
 
-from devin_watchdog.fakedevin import FakeDevin
-from flight_recorder.chain import verify_file
-from flight_recorder.cli import main
-from flight_recorder.importers.devin import DevinClient, DevinError, Importer, State, iso
+from agent_watchdog.chain import verify_file
+from agent_watchdog.cli import main
+from agent_watchdog.devin import DevinClient, DevinError, Importer, State, iso
+from agent_watchdog.fakedevin import FakeDevin
 
 
 class Clock:
@@ -63,9 +63,9 @@ def test_a_session_becomes_a_verified_log(devin: FakeDevin, tmp_path: Path, make
     message = _entries(log)[1]
     assert message["@timestamp"] == iso(1_793_000_000)  # when it happened, not when read
     assert message["agent"]["name"] == "devin" and message["session"]["id"] == "devin-s1"
-    assert message["flight"]["from"] == "devin"
-    assert message["flight"]["text"]["value"] == "working on it"
-    status = _entries(log)[3]["flight"]
+    assert message["activity"]["from"] == "devin"
+    assert message["activity"]["text"]["value"] == "working on it"
+    status = _entries(log)[3]["activity"]
     assert (status["status"], status["status_detail"]) == ("running", "working")
 
 
@@ -95,7 +95,7 @@ def test_a_second_run_records_only_what_is_new(
 
     log = tmp_path / "logs" / "devin-s1.ndjson"
     assert verify_file(log).valid  # the chain was extended, not forked
-    status = [e["flight"] for e in _entries(log) if e["event"]["action"] == "session.status"]
+    status = [e["activity"] for e in _entries(log) if e["event"]["action"] == "session.status"]
     assert [(s["previous_status_detail"], s["status_detail"]) for s in status] == [
         (None, "working"),
         ("working", "waiting_for_user"),
@@ -132,7 +132,7 @@ def test_usage_and_prs_are_kept_in_the_snapshot(
         pull_requests=[{"pr_url": "https://x.example/pr/1", "pr_state": "open"}],
     )
     make().run()
-    snapshot = _entries(tmp_path / "logs" / "devin-s1.ndjson")[0]["flight"]["session"]["value"]
+    snapshot = _entries(tmp_path / "logs" / "devin-s1.ndjson")[0]["activity"]["session"]["value"]
     assert snapshot["acus_consumed"] == 3.5
     assert snapshot["pull_requests"][0]["pr_state"] == "open"
 

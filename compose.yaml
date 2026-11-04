@@ -1,4 +1,4 @@
-# docker compose up          → watches your org, DRY RUN, dashboard on localhost:8765,
+# docker compose up          → watches your org, dashboard on localhost:8765,
 #                              public listener (ingest + approval links) on :8766
 # docker compose run --rm --service-ports demo   → the scripted demo, no keys needed
 services:
@@ -13,12 +13,12 @@ services:
       DEVIN_API_KEY: ${DEVIN_API_KEY:?set a Devin service-user key (cog_...)}
       DEVIN_ORG_ID: ${DEVIN_ORG_ID:-}
       TEAMS_WEBHOOK_URL: ${TEAMS_WEBHOOK_URL:-}
-      WATCHDOG_DRY_RUN: ${WATCHDOG_DRY_RUN:-1}
-      WATCHDOG_JUDGE_MODEL: ${WATCHDOG_JUDGE_MODEL:-}
+      WATCHDOG_DRY_RUN: ${WATCHDOG_DRY_RUN:-}   # empty: use the saved setting
       WATCHDOG_APPROVAL_TOKEN: ${WATCHDOG_APPROVAL_TOKEN:?set a secret for signing approval links}
       WATCHDOG_PUBLIC_URL: ${WATCHDOG_PUBLIC_URL:-}
       WATCHDOG_INGEST_TOKEN: ${WATCHDOG_INGEST_TOKEN:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}   # the optional AI judge
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
 
   demo:
     build: .
@@ -26,7 +26,7 @@ services:
     ports: ["127.0.0.1:8765:8765", "127.0.0.1:8766:8766"]
     command: ["demo", "--host", "0.0.0.0", "--dir", "/data/demo"]
     environment:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
 
 volumes:
   watchdog-data:
