@@ -25,7 +25,7 @@ watchdog = "agent_watchdog.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-agent_watchdog = ["*.html", "py.typed"]
+agent_watchdog = ["*.html", "*.svg", "py.typed"]
 
 [tool.ruff]
 line-length = 100

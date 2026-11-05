@@ -524,7 +524,7 @@ def test_the_dashboard_serves_state_and_guards_approval(rig: Any) -> None:
         assert state["sessions"][0]["rung_name"] == "log"
         assert state["dry_run"] is False
         with urllib.request.urlopen(f"{base}/", timeout=5) as response:  # noqa: S310
-            assert b"<title>Watchdog</title>" in response.read()
+            assert b"<title>Watchdog - MCP proxy</title>" in response.read()
         approve = f"{base}/api/approve"
         assert _post(approve, {"session_id": "devin-s1", "token": "wrong"}) == 403
         assert _post(approve, {"session_id": "devin-s1", "token": "s3cret"}, "text/plain") == 415

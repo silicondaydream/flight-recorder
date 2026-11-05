@@ -1,4 +1,4 @@
-# Watchdog
+# <img src="docs/img/logo.svg" alt="" height="32"> Watchdog - MCP proxy
 
 **Watchdog watches AI coding-agent sessions and steps in when one goes wrong.**
 It records what each session does (every message, every tool call and its

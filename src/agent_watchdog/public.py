@@ -20,8 +20,9 @@ import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib.resources import files
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from agent_watchdog.approvals import Signer
 from agent_watchdog.engine import Watchdog
@@ -33,7 +34,8 @@ MAX_BODY = 8 * 1024 * 1024
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Watchdog approval</title>
+<title>Watchdog - MCP proxy: approval</title>
+<link rel="icon" type="image/svg+xml" href="{icon}">
 <style>
 :root {{ color-scheme: dark; }}
 body {{ margin: 0; min-height: 100vh; background-color: #09090b; color: #FFFFFF; isolation: isolate;
@@ -44,7 +46,9 @@ body::before {{ content: ""; position: fixed; inset: 0; z-index: -1; pointer-eve
   -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, #000 50%, transparent 100%);
   mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, #000 50%, transparent 100%); }}
 main {{ max-width: 520px; margin: 12vh auto; padding: 0 16px; }}
-.brand {{ font-size: 12px; font-weight: 700; letter-spacing: .08em; color: rgba(255,255,255,.6);
+.brand svg {{ width: 18px; height: 21px; }}
+.brand {{ display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700;
+  letter-spacing: .08em; color: rgba(255,255,255,.6);
   margin-bottom: 10px; }}
 .card {{ background: #051F40; border: 1px solid rgba(255,255,255,.14); border-radius: 16px;
   padding: 24px; }}
@@ -58,11 +62,17 @@ button.keep {{ background: #FFFFFF; border-color: #FFFFFF; color: #051F40; }}
 button:focus-visible {{ outline: 2px solid #FFFFFF; outline-offset: 2px; }}
 .done {{ font-weight: 650; }}
 </style></head>
-<body><main><div class="brand">WATCHDOG</div><div class="card">{body}</div></main></body></html>"""
+<body><main><div class="brand">{logo} WATCHDOG - MCP PROXY</div>
+<div class="card">{body}</div></main></body></html>"""
+
+
+LOGO_SVG = files("agent_watchdog").joinpath("logo.svg").read_text(encoding="utf-8").strip()
+LOGO = LOGO_SVG.replace('width="31" height="36" ', 'aria-hidden="true" ')
+ICON = "data:image/svg+xml," + quote(" ".join(LOGO_SVG.split()), safe=":/= ")
 
 
 def _page(body: str) -> bytes:
-    return PAGE.format(body=body).encode()
+    return PAGE.format(body=body, logo=LOGO, icon=ICON).encode()
 
 
 def serve_public(
