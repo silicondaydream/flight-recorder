@@ -1,0 +1,19 @@
+name: Dependency review
+
+# Fails a pull request that adds a dependency with a known high-severity
+# vulnerability.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
